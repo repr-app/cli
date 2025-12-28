@@ -48,7 +48,7 @@ rf = "resumeflow.cli:app"
 [project.urls]
 Homepage = "https://resumeflow.dev"
 Documentation = "https://resumeflow.dev/docs"
-Repository = "https://github.com/resumeflow/cli"
+Repository = "https://github.com/resumeflow-ai/cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
