@@ -262,7 +262,7 @@ The CLI performs deep analysis of your repositories:
 Contributions welcome! See [CONTRIBUTING.md](https://github.com/resumeflow/cli/blob/main/CONTRIBUTING.md).
 
 ```bash
-git clone https://github.com/resumeflow/cli.git
+git clone https://github.com/resumeflow-ai/cli.git
 cd cli
 pip install -e ".[dev]"
 pytest
