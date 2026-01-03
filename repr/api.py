@@ -23,6 +23,16 @@ def _get_user_url() -> str:
     return f"{get_api_base()}/user"
 
 
+def _get_stories_url() -> str:
+    return f"{get_api_base()}/stories"
+
+
+def _get_public_settings_url() -> str:
+    """Get URL for public profile settings endpoint."""
+    # This endpoint is under /api/public not /api/cli
+    return f"{get_api_base().replace('/api/cli', '/api/public')}/settings"
+
+
 class APIError(Exception):
     """API request error."""
     pass
@@ -34,7 +44,7 @@ def _get_headers() -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "User-Agent": "repr-cli/0.1.0",
+        "User-Agent": "repr-cli/0.1.1",
     }
 
 
@@ -261,3 +271,119 @@ def sync_get_user_info() -> dict[str, Any]:
     """
     import asyncio
     return asyncio.run(get_user_info())
+
+
+async def get_stories(
+    repo_name: str | None = None,
+    since: str | None = None,
+    technologies: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """
+    Get commit stories from repr.dev.
+    
+    Args:
+        repo_name: Filter by repository name
+        since: Filter by date (ISO format or human-readable like "1 week ago")
+        technologies: Comma-separated list of technologies to filter by
+        limit: Maximum number of stories to return
+        offset: Pagination offset
+    
+    Returns:
+        Dict with 'stories' list and 'total' count
+    
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            params: dict[str, Any] = {
+                "limit": limit,
+                "offset": offset,
+            }
+            if repo_name:
+                params["repo_name"] = repo_name
+            if since:
+                params["since"] = since
+            if technologies:
+                params["technologies"] = technologies
+            
+            response = await client.get(
+                _get_stories_url(),
+                headers=_get_headers(),
+                params=params,
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to get stories: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def push_story(story_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Push a commit story to repr.dev.
+    
+    Args:
+        story_data: Story data including summary, technologies, repo info, etc.
+    
+    Returns:
+        Created/updated story data
+    
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                _get_stories_url(),
+                headers=_get_headers(),
+                json=story_data,
+                timeout=60,
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to push story: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def get_public_profile_settings() -> dict[str, Any]:
+    """
+    Get the current user's public profile settings.
+    
+    Returns:
+        Dict with username, is_profile_public, profile_url, etc.
+    
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                _get_public_settings_url(),
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to get profile settings: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
