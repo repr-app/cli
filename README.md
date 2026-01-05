@@ -1,6 +1,6 @@
 # Repr CLI
 
-A privacy-first CLI that analyzes your git repositories to generate per-repo profiles, extract commit stories, and sync them to `repr.dev`.
+A privacy-first CLI that converts your git commit history into a living professional profile at `repr.dev/{username}`. Track repositories, extract commit stories, and keep your profile automatically up-to-date.
 
 [![PyPI version](https://img.shields.io/pypi/v/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/repr-cli.svg)](https://pypi.org/project/repr-cli/)
@@ -60,29 +60,133 @@ pip install repr-cli
 
 ## Quick start
 
-Authenticate (required for non-offline flows):
+### 1. Authenticate
 
 ```bash
 repr login
 ```
 
-Analyze repositories (generates one profile per repo; pushes automatically):
+### 2. Add repositories to track
 
 ```bash
-repr analyze ~/code
+# Add a specific repo or directory with multiple repos
+repr repos add ~/code/myproject
+
+# Or auto-discover repos in a directory
+repr repos scan
 ```
 
-View the latest profile:
+### 3. Sync your work
 
 ```bash
-repr view
+# Sync all tracked repos (analyzes new commits and pushes stories)
+repr sync
+
+# Or sync just one repo
+repr sync --repo ~/code/myproject
 ```
+
+### 4. Optional: Enable automatic syncing
+
+```bash
+# Install git hooks for auto-sync on commit
+repr hook install --all
+```
+
+### 5. View your stories
+
+```bash
+# List recent commit stories
+repr stories
+
+# Filter by repo or technology
+repr stories --repo myproject --technologies React
+```
+
+### 6. Share your profile
+
+```bash
+# Get your public profile URL
+repr whoami
+```
+
+Your profile lives at `repr.dev/{username}` and updates automatically as you work!
+
+## Core workflow
+
+The modern workflow uses **tracked repositories** for automatic syncing:
+
+```bash
+# 1. Add repos to track
+repr repos add ~/code
+
+# 2. Sync new commits (manual)
+repr sync
+
+# 3. Or install hooks for auto-sync on commit
+repr hook install --all
+```
+
+Stories are synced to `repr.dev` and your public profile updates automatically.
+
+## One-off analysis
+
+For analyzing repos without tracking them:
+
+```bash
+# Analyze once and push (doesn't add to tracked list)
+repr analyze ~/code/external-project
+```
+
+## Commands
+
+### Repository tracking & syncing
+
+- `repr repos list [--json]`: list tracked repositories with sync status
+- `repr repos add <path>`: add repository or directory to tracking
+- `repr repos remove <path>`: stop tracking a repository
+- `repr repos scan`: auto-discover repos in configured paths
+- `repr sync [--repo PATH] [--all] [--json]`: sync tracked repos (analyze new commits and push)
+
+### Git hooks (auto-sync)
+
+- `repr hook install [--repo PATH|--all]`: install post-commit hooks for auto-sync
+- `repr hook remove [--repo PATH|--all]`: remove post-commit hooks
+- `repr hook status [--json]`: show hook installation status
+
+### Stories & data
+
+- `repr stories [--repo NAME] [--since ...] [--technologies ...] [--limit N] [--json]`: list commit stories
+- `repr analyze <paths...> [--json] [--since ...] [--offline] [--local]`: one-off analysis (auto-pushes unless `--offline`)
+
+### Auth & status
+
+- `repr login`: authenticate with repr.dev
+- `repr logout`: clear authentication
+- `repr whoami [--json]`: show user info and public profile URL
+- `repr status [--json]`: health/status overview
+
+### Configuration
+
+- `repr config [--json]`: show config and endpoints
+- `repr config-set [...]`: configure LLM models and local endpoints
+
+Environment variables:
+
+```bash
+REPR_DEV=1         # enable dev mode (localhost backend)
+REPR_API_BASE=URL  # override API base URL
+```
+
+Config location: `~/.repr/config.json`
 
 ## Privacy modes
 
+For one-off analysis without cloud LLM:
+
 | Mode | How | Notes |
 |------|-----|-------|
-| **Cloud** | `repr analyze <paths...>` | Requires `repr login` |
+| **Cloud** | `repr analyze <paths...>` | Default, requires `repr login` |
 | **Local LLM** | `repr analyze <paths...> --local` | Uses OpenAI-compatible local endpoint |
 | **Offline** | `repr analyze <paths...> --offline` | Metrics-only, no network, no push |
 
@@ -93,64 +197,17 @@ repr analyze ~/code --local --model llama3.2
 repr analyze ~/code --local --api-base http://localhost:11434/v1
 ```
 
-## VS Code Extension integration (`--json`)
+## VS Code Extension integration
 
-Several commands support `--json` for machine-readable output (no Rich formatting). This is intended for the VS Code extension / other integrations.
-
-Examples:
+Commands support `--json` for machine-readable output (no Rich formatting):
 
 ```bash
-repr analyze ~/code --json
-repr status --json
-repr whoami --json
 repr repos list --json
 repr stories --json
 repr sync --json
+repr status --json
+repr whoami --json
 repr hook status --json
-```
-
-## Commands
-
-### Analyze + profiles
-
-- `repr analyze <paths...>`: analyze repositories, save per-repo profiles, auto-push (unless `--offline`)
-- `repr view [--profile NAME] [--raw] [--json]`: view latest (or named) profile
-- `repr profiles [--json]`: list saved profiles
-- `repr push [--profile NAME]`: push unsynced profiles
-
-### Auth + status
-
-- `repr login`: device-code login
-- `repr logout`: clear auth
-- `repr whoami [--json]`: show current user + public profile url (if set)
-- `repr status [--json]`: health/status overview (auth, profiles, sync state)
-
-### Stories + sync automation
-
-- `repr stories [--repo NAME] [--since ...] [--technologies ...] [--limit N] [--json]`: list commit stories
-- `repr repos list|add|remove|scan [--json]`: manage tracked repositories
-- `repr sync [--repo PATH] [--all] [--background] [--json]`: analyze new commits and push updates for tracked repos
-- `repr hook install|remove|status [--repo PATH|--all] [--json]`: manage post-commit hooks
-
-### Configuration
-
-- `repr config [--json]`: show config + endpoints
-- `repr config-set [...]`: set LLM models / local endpoint defaults
-
-Environment variables:
-
-```bash
-REPR_DEV=1         # enable dev mode (localhost backend)
-REPR_API_BASE=URL  # override API base URL
-```
-
-Config + output locations:
-
-```text
-~/.repr/
-  config.json
-  profiles/
-  cache/
 ```
 
 ## Requirements
