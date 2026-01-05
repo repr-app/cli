@@ -70,7 +70,9 @@ repr repos add ~/code/side-project
 
 ## Optional: Cloud & Publishing
 
-If you want to back up your stories or create a public profile (e.g., `repr.dev/yourname`), you can sync your local data to the cloud.
+If you want convenience without managing your own API keys, you can use Repr's backend. It processes your code with proprietary models but operates under a **zero data retention (ZDR) policy**—no logging, no storage beyond ephemeral processing.
+
+Alternatively, use the cloud for backup and sharing: sync your locally generated stories or create a public profile (e.g., `repr.dev/yourname`).
 
 **This is the only time data leaves your machine.**
 
@@ -113,7 +115,7 @@ repr config-set --api-base http://localhost:11434/v1 --model llama3
 | **Local LLM** | `repr analyze --local` | Uses your local LLM endpoint. Zero external network calls. |
 | **BYOK** | `repr analyze --local` | Connects directly to OpenAI/Anthropic using your key. |
 | **Offline** | `repr analyze --offline` | Metrics only. No LLM, no network. |
-| **Cloud** | `repr analyze` | **(Requires Login)** Uses Repr's managed LLM backend. |
+| **Cloud** | `repr analyze` | **(Requires Login)** Uses Repr's backend. Sends metadata + diffs. Zero data retention (ZDR) policy—no logging, ephemeral processing only. |
 
 ## Command Reference
 
