@@ -7,7 +7,7 @@ name = "repr-cli"
 version = "0.2.2"
 description = "A beautiful, privacy-first CLI that analyzes your code repositories and generates a compelling developer profile"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Repr", email = "hello@repr.dev"}
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

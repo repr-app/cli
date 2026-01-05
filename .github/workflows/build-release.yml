@@ -144,7 +144,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev devscripts debhelper
+          sudo apt-get install -y dpkg-dev devscripts debhelper build-essential python3-all dh-python
           python -m pip install --upgrade pip
           pip install stdeb
 
