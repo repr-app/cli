@@ -1,5 +1,7 @@
 """
 Authentication via device code flow.
+
+Tokens are stored securely in OS keychain (see keychain.py).
 """
 
 import asyncio
@@ -149,7 +151,9 @@ async def poll_for_token(device_code: str, interval: int = POLL_INTERVAL) -> Tok
 
 def save_token(token_response: TokenResponse) -> None:
     """
-    Save authentication token to config.
+    Save authentication token securely.
+    
+    Token is stored in OS keychain, config only stores a reference.
     
     Args:
         token_response: Token response from successful auth
@@ -163,7 +167,10 @@ def save_token(token_response: TokenResponse) -> None:
 
 
 def logout() -> None:
-    """Clear authentication and logout."""
+    """Clear authentication and logout.
+    
+    Removes token from keychain and clears config reference.
+    """
     clear_auth()
 
 
@@ -191,6 +198,63 @@ def require_auth() -> str:
     if not auth or not auth.get("access_token"):
         raise AuthError("Not authenticated. Run 'repr login' first.")
     return auth["access_token"]
+
+
+def migrate_plaintext_auth() -> bool:
+    """
+    Migrate plaintext auth tokens to keychain storage.
+    
+    Called on first run after upgrade to detect and migrate old tokens.
+    
+    Returns:
+        True if migration occurred
+    """
+    from .keychain import store_secret
+    import json
+    from .config import CONFIG_FILE, save_config
+    
+    if not CONFIG_FILE.exists():
+        return False
+    
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            config = json.load(f)
+        
+        auth = config.get("auth")
+        if not auth:
+            return False
+        
+        # Check if already migrated (has keychain ref)
+        if auth.get("token_keychain_ref"):
+            return False
+        
+        # Check for plaintext token
+        plaintext_token = auth.get("access_token")
+        if not plaintext_token:
+            return False
+        
+        # Migrate to keychain
+        user_id = auth.get("user_id", "unknown")[:8]
+        keychain_ref = f"auth_token_{user_id}"
+        store_secret(keychain_ref, plaintext_token)
+        
+        # Update config (remove plaintext, add reference)
+        del config["auth"]["access_token"]
+        config["auth"]["token_keychain_ref"] = keychain_ref
+        
+        # Handle litellm key if present
+        litellm_key = auth.get("litellm_api_key")
+        if litellm_key:
+            litellm_ref = f"litellm_key_{user_id}"
+            store_secret(litellm_ref, litellm_key)
+            del config["auth"]["litellm_api_key"]
+            config["auth"]["litellm_keychain_ref"] = litellm_ref
+        
+        save_config(config)
+        return True
+        
+    except Exception:
+        return False
 
 
 class AuthFlow:

@@ -1,290 +1,126 @@
-# 🚀 Repr CLI
+# Repr CLI
 
-> A beautiful CLI that analyzes your code repositories and generates a compelling developer profile using AI.
+A privacy-first CLI that analyzes your git repositories to generate per-repo profiles, extract commit stories, and sync them to `repr.dev`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## ✨ Features
+## Install
 
-- 🤖 **AI-Powered Analysis** — Deep code understanding, not just stats
-- 🔒 **Zero Data Retention** — Your code is analyzed but never stored
-- 🏠 **Local LLM Support** — Use Ollama for completely local processing
-- 📊 **Deep Repository Analysis** — Architecture, frameworks, complexity metrics
-- 🎨 **Beautiful UI** — Rich terminal interface with progress indicators
-- 📝 **Markdown Output** — Clean, readable profiles you can share anywhere
-
-## 🔐 Privacy Options
-
-Choose your privacy level:
-
-| Mode | Description | Data Flow |
-|------|-------------|-----------|
-| **Cloud (ZDR)** | Zero Data Retention with cloud LLMs | Code sent → analyzed → immediately discarded |
-| **Local** | Completely local with Ollama | Code never leaves your machine |
-| **Offline** | Basic stats only, no AI | No network required |
-
-### Zero Data Retention (Default)
-
-When using cloud analysis:
-- ✅ Code is sent over encrypted connections (TLS)
-- ✅ Analysis happens in ephemeral containers
-- ✅ **No code is ever stored or logged**
-- ✅ LLM providers configured for zero retention
-- ✅ Results returned, data discarded immediately
-
-### Local LLM Mode
-
-For complete local control:
-```bash
-# Use Ollama (recommended)
-repr analyze ~/code --local --model llama3.2
-
-# Use any OpenAI-compatible local server
-repr analyze ~/code --local --api-base http://localhost:11434/v1
-```
-
-## 📸 Demo
+Recommended (isolated):
 
 ```bash
-$ repr analyze ~/code
-
-╭──────────────────────────────────────────────────────────────╮
-│  🚀  Repr CLI v0.1.0                                         │
-╰──────────────────────────────────────────────────────────────╯
-
-Discovering repositories...
-Found 12 repositories in 1 path(s)
-
-                        Analyzing                               
-╭────────────────────┬──────────┬──────────┬──────────┬─────────╮
-│ Repository         │ Language │  Commits │      Age │  Status │
-├────────────────────┼──────────┼──────────┼──────────┼─────────┤
-│ ecommerce-api      │ Python   │      340 │   1.5 yr │ ✓ Done  │
-│ react-dashboard    │ TypeScript│     156 │   8 mo   │ ✓ Done  │
-│ ml-experiments     │ Python   │      89 │   4 mo   │ ✓ Done  │
-╰────────────────────┴──────────┴──────────┴──────────┴─────────╯
-
-✓ Profile saved: ~/.repr/profiles/2024-01-15.md
+pipx install repr-cli
 ```
 
-## 🚦 Quick Start
-
-### Installation
+Alternative:
 
 ```bash
 pip install repr-cli
 ```
 
-### For Local LLM (Optional)
+## Quick start
 
-```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull a model
-ollama pull llama3.2
-```
-
-### Usage
-
-**Generate your profile (cloud, ZDR):**
-
-```bash
-# Analyze repos with cloud AI (zero data retention)
-repr analyze ~/code
-```
-
-**Use local LLM:**
-
-```bash
-# Use Ollama locally
-repr analyze ~/code --local
-
-# Specify model
-repr analyze ~/code --local --model codellama
-
-# Use custom local endpoint
-repr analyze ~/code --local --api-base http://localhost:1234/v1
-```
-
-**Offline mode (stats only):**
-
-```bash
-# No AI, no network - just code metrics
-repr analyze ~/code --offline
-```
-
-**View your profile:**
-
-```bash
-repr view
-repr view --raw > profile.md
-```
-
-## 🛠️ Commands
-
-### `repr analyze`
-
-Analyze repositories and generate a developer profile.
-
-```bash
-repr analyze <paths...> [OPTIONS]
-
-Options:
-  --local              Use local LLM (Ollama) instead of cloud
-  --model NAME         Local model to use (default: llama3.2)
-  --api-base URL       Custom local LLM API endpoint
-  --offline            Stats only, no AI analysis
-  --no-cache           Re-analyze all repositories
-  --verbose, -V        Show detailed logs
-```
-
-### `repr view`
-
-View your generated profile.
-
-```bash
-repr view [OPTIONS]
-
-Options:
-  --profile NAME  View a specific profile
-  --raw, -r       Output plain markdown
-```
-
-### `repr login`
-
-Authenticate for cloud analysis.
+Authenticate (required for non-offline flows):
 
 ```bash
 repr login
 ```
 
-### `repr logout`
-
-Clear authentication.
+Analyze repositories (generates one profile per repo; pushes automatically):
 
 ```bash
-repr logout
+repr analyze ~/code
 ```
 
-### `repr push`
-
-Upload profile to repr.dev.
+View the latest profile:
 
 ```bash
-repr push [--profile NAME]
+repr view
 ```
 
-### `repr profiles`
+## Privacy modes
 
-List all saved profiles.
+| Mode | How | Notes |
+|------|-----|-------|
+| **Cloud** | `repr analyze <paths...>` | Requires `repr login` |
+| **Local LLM** | `repr analyze <paths...> --local` | Uses OpenAI-compatible local endpoint |
+| **Offline** | `repr analyze <paths...> --offline` | Metrics-only, no network, no push |
+
+Local LLM examples:
 
 ```bash
-repr profiles
+repr analyze ~/code --local --model llama3.2
+repr analyze ~/code --local --api-base http://localhost:11434/v1
 ```
 
-## ⚙️ Configuration
+## VS Code Extension integration (`--json`)
 
-Config stored in `~/.repr/config.json`:
+Several commands support `--json` for machine-readable output (no Rich formatting). This is intended for the VS Code extension / other integrations.
 
-```json
-{
-  "version": 1,
-  "settings": {
-    "default_paths": ["~/code"],
-    "skip_patterns": ["node_modules", "venv", ".venv", "vendor", "__pycache__", ".git"]
-  },
-  "llm": {
-    "extraction_model": "gpt-4o-mini",
-    "synthesis_model": "gpt-4o",
-    "local_api_url": "http://localhost:11434/v1",
-    "local_api_key": "ollama"
-  }
-}
-```
-
-### Environment Variables
+Examples:
 
 ```bash
-# Use local LLM by default
-export REPR_LOCAL=true
-export REPR_MODEL=codellama
-
-# Custom Ollama endpoint
-export OLLAMA_HOST=http://localhost:11434
+repr analyze ~/code --json
+repr status --json
+repr whoami --json
+repr repos list --json
+repr stories --json
+repr sync --json
+repr hook status --json
 ```
 
-## 🔍 What Gets Analyzed
+## Commands
 
-The CLI performs deep analysis of your repositories:
+### Analyze + profiles
 
-**Code Metrics:**
-- Lines of code, comments, complexity
-- Function/class counts
-- Average file and function sizes
+- `repr analyze <paths...>`: analyze repositories, save per-repo profiles, auto-push (unless `--offline`)
+- `repr view [--profile NAME] [--raw] [--json]`: view latest (or named) profile
+- `repr profiles [--json]`: list saved profiles
+- `repr push [--profile NAME]`: push unsynced profiles
 
-**Architecture Detection:**
-- Project type (web app, API, CLI, library, ML project)
-- Architecture patterns (MVC, clean architecture, microservices)
-- Framework detection (React, Django, FastAPI, etc.)
+### Auth + status
 
-**Quality Indicators:**
-- Test coverage and test frameworks
-- Documentation presence and quality
-- Docstring coverage
+- `repr login`: device-code login
+- `repr logout`: clear auth
+- `repr whoami [--json]`: show current user + public profile url (if set)
+- `repr status [--json]`: health/status overview (auth, profiles, sync state)
 
-**Technical Stack:**
-- Languages and percentages
-- Dependencies and notable libraries
-- API endpoints detection
+### Stories + sync automation
 
-## 📋 Requirements
+- `repr stories [--repo NAME] [--since ...] [--technologies ...] [--limit N] [--json]`: list commit stories
+- `repr repos list|add|remove|scan [--json]`: manage tracked repositories
+- `repr sync [--repo PATH] [--all] [--background] [--json]`: analyze new commits and push updates for tracked repos
+- `repr hook install|remove|status [--repo PATH|--all] [--json]`: manage post-commit hooks
+
+### Configuration
+
+- `repr config [--json]`: show config + endpoints
+- `repr config-set [...]`: set LLM models / local endpoint defaults
+
+Environment variables:
+
+```bash
+REPR_DEV=1         # enable dev mode (localhost backend)
+REPR_API_BASE=URL  # override API base URL
+```
+
+Config + output locations:
+
+```text
+~/.repr/
+  config.json
+  profiles/
+  cache/
+```
+
+## Requirements
 
 - Python 3.10+
 - Git
-- For local mode: [Ollama](https://ollama.com/) or compatible LLM server
+- For `--local`: an OpenAI-compatible local endpoint (e.g. Ollama)
 
-## 📁 Directory Structure
-
-```
-~/.repr/
-├── config.json          # Settings
-├── profiles/            # Generated profiles
-│   ├── 2024-01-15.md
-│   └── 2024-01-20.md
-└── cache/              # Analysis cache
-```
-
-## 🤝 Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](https://github.com/repr-app/cli/blob/main/CONTRIBUTING.md).
-
-```bash
-git clone https://github.com/repr-app/cli.git
-cd cli
-pip install -e ".[dev]"
-pytest
-```
-
-## 📄 License
+## License
 
 MIT License - see [LICENSE](LICENSE).
-
-## 🔗 Links
-
-- [Website](https://repr.dev)
-- [Documentation](https://repr.dev/docs)
-- [GitHub](https://github.com/repr-app/cli)
-
-## 💬 Support
-
-- Email: [hello@repr.dev](mailto:hello@repr.dev)
-- Discord: [discord.gg/repr](https://discord.gg/repr)
-
----
-
-<p align="center">
-  Made with ❤️ by the Repr team
-</p>

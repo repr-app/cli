@@ -112,6 +112,7 @@ def get_commits_with_diffs(
     days: int = 365,
     max_diff_lines_per_file: int = 50,
     max_files_per_commit: int = 10,
+    since: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Get commits with actual diff content for LLM analysis.
@@ -122,6 +123,7 @@ def get_commits_with_diffs(
         days: Number of days to look back (default 365 for 1 year)
         max_diff_lines_per_file: Maximum diff lines to include per file
         max_files_per_commit: Maximum files to include per commit
+        since: Optional SHA or date string to start from (only analyze commits after this)
     
     Returns:
         List of commit objects with diffs
@@ -133,9 +135,29 @@ def get_commits_with_diffs(
     cutoff_date = datetime.now() - timedelta(days=days)
     cutoff_timestamp = cutoff_date.timestamp()
     
+    # Parse since parameter if provided
+    since_timestamp: float | None = None
+    since_sha: str | None = None
+    if since:
+        # Try to parse as date first
+        try:
+            since_date = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            since_timestamp = since_date.timestamp()
+        except ValueError:
+            # Treat as SHA
+            since_sha = since
+    
     for commit in repo.iter_commits(max_count=count):
         # Stop if we've gone past the time window
         if commit.committed_date < cutoff_timestamp:
+            break
+        
+        # Stop if we've reached the since SHA
+        if since_sha and commit.hexsha.startswith(since_sha):
+            break
+        
+        # Skip commits before the since timestamp
+        if since_timestamp and commit.committed_date <= since_timestamp:
             break
         
         # Get files changed with diffs
@@ -444,3 +466,183 @@ def get_dependencies(
     """
     return detect_dependencies(repo_path)
 
+
+def get_commits_by_shas(
+    repo_path: Path,
+    shas: list[str],
+    max_diff_lines_per_file: int = 50,
+    max_files_per_commit: int = 10,
+) -> list[dict[str, Any]]:
+    """
+    Get specific commits by their SHAs with diffs.
+    
+    Args:
+        repo_path: Path to the repository
+        shas: List of commit SHAs (full or short)
+        max_diff_lines_per_file: Maximum diff lines to include per file
+        max_files_per_commit: Maximum files to include per commit
+    
+    Returns:
+        List of commit objects with diffs in the order of SHAs provided
+    """
+    repo = Repo(repo_path)
+    commits = []
+    
+    for sha in shas:
+        try:
+            commit = repo.commit(sha)
+        except Exception:
+            # Skip invalid SHAs
+            continue
+        
+        # Get files changed with diffs
+        files = []
+        parent = commit.parents[0] if commit.parents else None
+        
+        try:
+            # Get diff for this commit
+            if parent:
+                diffs = parent.diff(commit, create_patch=True)
+            else:
+                # Initial commit - show all files as additions
+                diffs = commit.diff(None, create_patch=True)
+            
+            for diff_item in list(diffs)[:max_files_per_commit]:
+                file_path = diff_item.b_path or diff_item.a_path
+                if not file_path:
+                    continue
+                
+                # Get the diff text
+                diff_text = ""
+                if diff_item.diff:
+                    try:
+                        diff_text = diff_item.diff.decode('utf-8', errors='ignore')
+                    except:
+                        diff_text = str(diff_item.diff)
+                    
+                    # Truncate diff if too long
+                    diff_lines = diff_text.split('\n')
+                    if len(diff_lines) > max_diff_lines_per_file:
+                        diff_text = '\n'.join(diff_lines[:max_diff_lines_per_file])
+                        diff_text += f"\n... ({len(diff_lines) - max_diff_lines_per_file} more lines)"
+                
+                files.append({
+                    "path": file_path,
+                    "change_type": diff_item.change_type,  # A=added, D=deleted, M=modified, R=renamed
+                    "diff": diff_text,
+                })
+        except (GitCommandError, Exception):
+            # If we can't get diff, just include file list
+            for filename in commit.stats.files.keys():
+                if len(files) >= max_files_per_commit:
+                    break
+                files.append({
+                    "path": filename,
+                    "change_type": "M",
+                    "diff": "",
+                })
+        
+        commits.append({
+            "sha": commit.hexsha[:8],
+            "full_sha": commit.hexsha,
+            "message": commit.message.strip(),
+            "author": commit.author.name,
+            "author_email": commit.author.email,
+            "date": datetime.fromtimestamp(commit.committed_date).isoformat(),
+            "files": files,
+            "insertions": commit.stats.total["insertions"],
+            "deletions": commit.stats.total["deletions"],
+        })
+    
+    return commits
+
+
+def suggest_related_commits(
+    repo_path: Path,
+    limit: int = 50,
+    min_overlap: int = 2,
+) -> list[dict[str, Any]]:
+    """
+    Suggest groups of related commits based on file overlap.
+    
+    Args:
+        repo_path: Path to the repository
+        limit: Maximum commits to analyze
+        min_overlap: Minimum number of overlapping files to consider commits related
+    
+    Returns:
+        List of suggested commit groups with overlap info
+    """
+    from collections import defaultdict
+    
+    # Get recent commits with file info
+    commits = get_commits_with_diffs(repo_path, count=limit, days=90)
+    
+    if len(commits) < 2:
+        return []
+    
+    # Build file -> commits mapping
+    file_commits: dict[str, list[int]] = defaultdict(list)
+    for idx, commit in enumerate(commits):
+        files = commit.get('files', [])
+        for file_info in files:
+            file_path = file_info.get('path', '')
+            if file_path:
+                file_commits[file_path].append(idx)
+    
+    # Find commit pairs with overlapping files
+    overlap_scores: dict[tuple[int, int], int] = defaultdict(int)
+    overlapping_files: dict[tuple[int, int], set[str]] = defaultdict(set)
+    
+    for file_path, commit_indices in file_commits.items():
+        if len(commit_indices) > 1:
+            # These commits touch the same file
+            for i in range(len(commit_indices)):
+                for j in range(i + 1, len(commit_indices)):
+                    idx1, idx2 = commit_indices[i], commit_indices[j]
+                    pair = (min(idx1, idx2), max(idx1, idx2))
+                    overlap_scores[pair] += 1
+                    overlapping_files[pair].add(file_path)
+    
+    # Filter by minimum overlap and create suggestions
+    suggestions = []
+    seen_commits = set()
+    
+    for (idx1, idx2), score in sorted(overlap_scores.items(), key=lambda x: -x[1]):
+        if score < min_overlap:
+            continue
+        
+        # Skip if commits already in a group
+        if idx1 in seen_commits or idx2 in seen_commits:
+            continue
+        
+        # Find other related commits
+        related = [idx1, idx2]
+        for idx3 in range(len(commits)):
+            if idx3 in seen_commits or idx3 == idx1 or idx3 == idx2:
+                continue
+            
+            # Check overlap with any commit in the group
+            overlap_with_group = False
+            for group_idx in related:
+                pair = (min(idx3, group_idx), max(idx3, group_idx))
+                if pair in overlap_scores and overlap_scores[pair] >= min_overlap:
+                    overlap_with_group = True
+                    break
+            
+            if overlap_with_group:
+                related.append(idx3)
+        
+        if len(related) >= 2:
+            suggestion = {
+                'commit_shas': [commits[i]['full_sha'] for i in related],
+                'commit_count': len(related),
+                'overlap_score': score,
+                'overlapping_files': list(overlapping_files[(idx1, idx2)]),
+                'summary': f"{len(related)} related commits on {', '.join(list(overlapping_files[(idx1, idx2)])[:3])}",
+                'first_commit_message': commits[related[0]]['message'].split('\n')[0],
+            }
+            suggestions.append(suggestion)
+            seen_commits.update(related)
+    
+    return suggestions[:10]  # Return top 10 suggestions

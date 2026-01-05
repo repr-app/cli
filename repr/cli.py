@@ -1,60 +1,33 @@
 """
-Repr CLI - Main command-line interface.
+repr CLI - understand what you've actually worked on.
 
-Commands:
-    analyze     Analyze repositories and generate profiles (auto-pushed)
-    push        Push local profiles to repr.dev
-    view        View the latest profile
-    login       Authenticate with Repr
-    logout      Clear authentication
-    profiles    List saved profiles
+Commands follow the CLI_SPECIFICATION.md structure:
+- init: First-time setup
+- generate: Create stories from commits
+- week/since/standup: Quick reflection summaries
+- stories: Manage stories
+- push/sync/pull: Cloud operations
+- repos/hooks: Repository management
+- login/logout/whoami: Authentication
+- llm: LLM configuration
+- privacy/config/data: Privacy and data management
+- profile: Profile management
+- doctor: Health check
 """
 
 import asyncio
 import json
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List
 
 import typer
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
 
 from . import __version__
-from .config import (
-    list_profiles,
-    get_latest_profile,
-    get_profile,
-    get_profile_metadata,
-    save_profile,
-    save_repo_profile,
-    get_sync_info,
-    update_sync_info,
-    clear_cache,
-    is_authenticated,
-    CONFIG_DIR,
-    PROFILES_DIR,
-    set_dev_mode,
-    is_dev_mode,
-    get_api_base,
-    get_litellm_config,
-    get_llm_config,
-    set_llm_config,
-    clear_llm_config,
-    get_tracked_repos,
-    add_tracked_repo,
-    remove_tracked_repo,
-    update_repo_sync,
-    set_repo_hook_status,
-    get_repo_info,
-)
-from .discovery import discover_repos, is_config_only_repo, RepoInfo
-from .extractor import get_primary_language, detect_languages
-from .auth import AuthFlow, AuthError, logout as auth_logout, get_current_user
-from .api import push_repo_profile, get_stories as api_get_stories, APIError
-from .openai_analysis import analyze_repo_openai, DEFAULT_EXTRACTION_MODEL, DEFAULT_SYNTHESIS_MODEL
 from .ui import (
     console,
     print_header,
@@ -63,33 +36,96 @@ from .ui import (
     print_warning,
     print_info,
     print_next_steps,
-    print_panel,
     print_markdown,
     print_auth_code,
-    create_profile_table,
-    create_simple_progress,
+    create_spinner,
+    create_table,
+    format_relative_time,
     format_bytes,
-    AnalysisDisplay,
+    confirm,
     BRAND_PRIMARY,
     BRAND_SUCCESS,
+    BRAND_WARNING,
+    BRAND_ERROR,
     BRAND_MUTED,
 )
-from .analyzer import analyze_repo
-from .highlights import get_highlights
-from . import hooks
+from .config import (
+    CONFIG_DIR,
+    CONFIG_FILE,
+    load_config,
+    save_config,
+    is_authenticated,
+    get_access_token,
+    get_llm_config,
+    get_litellm_config,
+    set_dev_mode,
+    is_dev_mode,
+    get_api_base,
+    get_tracked_repos,
+    add_tracked_repo,
+    remove_tracked_repo,
+    set_llm_config,
+    get_config_value,
+    set_config_value,
+    is_cloud_allowed,
+    lock_local_only,
+    unlock_local_only,
+    get_privacy_settings,
+    add_byok_provider,
+    remove_byok_provider,
+    get_byok_config,
+    list_byok_providers,
+    BYOK_PROVIDERS,
+    get_default_llm_mode,
+    set_repo_hook_status,
+    set_repo_paused,
+    get_profile_config,
+    set_profile_config,
+)
+from .storage import (
+    save_story,
+    load_story,
+    delete_story,
+    list_stories,
+    get_story_count,
+    get_unpushed_stories,
+    mark_story_pushed,
+    update_story_metadata,
+    STORIES_DIR,
+    backup_all_data,
+    restore_from_backup,
+    get_storage_stats,
+)
+from .auth import AuthFlow, AuthError, logout as auth_logout, get_current_user, migrate_plaintext_auth
+from .api import APIError
 
 # Create Typer app
 app = typer.Typer(
     name="repr",
-    help="🚀 Privacy-first CLI that analyzes your code and generates a developer profile.",
+    help="repr - understand what you've actually worked on",
     add_completion=False,
     no_args_is_help=True,
 )
 
+# Sub-apps for command groups
+hooks_app = typer.Typer(help="Manage git post-commit hooks")
+llm_app = typer.Typer(help="Configure LLM (local/cloud/BYOK)")
+privacy_app = typer.Typer(help="Privacy audit and controls")
+config_app = typer.Typer(help="View and modify configuration")
+data_app = typer.Typer(help="Backup, restore, and manage data")
+profile_app = typer.Typer(help="View and manage profile")
+
+app.add_typer(hooks_app, name="hooks")
+app.add_typer(llm_app, name="llm")
+app.add_typer(privacy_app, name="privacy")
+app.add_typer(config_app, name="config")
+app.add_typer(data_app, name="data")
+app.add_typer(profile_app, name="profile")
+
 
 def version_callback(value: bool):
     if value:
-        console.print(f"Repr CLI v{__version__}")
+        console.print(f"repr v{__version__}")
         raise typer.Exit()
 
 
@@ -101,445 +137,870 @@ def dev_callback(value: bool):
 @app.callback()
 def main(
     version: bool = typer.Option(
-        False,
-        "--version",
-        "-v",
+        False, "--version", "-v",
         callback=version_callback,
         is_eager=True,
         help="Show version and exit.",
     ),
     dev: bool = typer.Option(
-        False,
-        "--dev",
+        False, "--dev",
         callback=dev_callback,
         is_eager=True,
-        help="Use localhost backend (http://localhost:8003).",
+        help="Use localhost backend.",
     ),
 ):
-    """Repr CLI - Privacy-first developer profile generator."""
-    pass
+    """repr - understand what you've actually worked on.
+    
+    Cloud features require sign-in. Local generation always works offline.
+    """
+    # Migrate plaintext auth tokens on startup
+    migrate_plaintext_auth()
 
+
+# =============================================================================
+# INIT
+# =============================================================================
 
 @app.command()
-def analyze(
-    paths: List[Path] = typer.Argument(
-        ...,
-        help="Paths to directories containing git repositories.",
+def init(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Directory to scan for repositories (default: ~/code)",
         exists=True,
-        file_okay=False,
         dir_okay=True,
         resolve_path=True,
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-V",
-        help="Show detailed logs during analysis.",
-    ),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Re-analyze all repositories (ignore cache).",
-    ),
+):
+    """
+    Initialize repr - scan for repositories and set up local config.
+    
+    Example:
+        repr init
+        repr init ~/projects
+    """
+    print_header()
+    console.print("Works locally first — sign in later for sync and sharing.")
+    console.print()
+    
+    # Determine scan path
+    scan_path = path or Path.home() / "code"
+    if not scan_path.exists():
+        scan_path = Path.cwd()
+    
+    console.print(f"Scanning {scan_path} for repositories...")
+    console.print()
+    
+    # Import discovery
+    from .discovery import discover_repos
+    
+    with create_spinner() as progress:
+        task = progress.add_task("Scanning...", total=None)
+        repos = discover_repos([scan_path], min_commits=5)
+    
+    if not repos:
+        print_warning(f"No repositories found in {scan_path}")
+        print_info("Try running: repr init <path-to-your-code>")
+        raise typer.Exit(1)
+    
+    console.print(f"Found [bold]{len(repos)}[/] repositories")
+    console.print()
+    
+    for repo in repos[:10]:  # Show first 10
+        lang = repo.primary_language or "Unknown"
+        console.print(f"✓ {repo.name} ({repo.commit_count} commits) [{lang}]")
+    
+    if len(repos) > 10:
+        console.print(f"  ... and {len(repos) - 10} more")
+    
+    console.print()
+    
+    # Ask to track
+    if confirm("Track these repositories?", default=True):
+        for repo in repos:
+            add_tracked_repo(str(repo.path))
+        print_success(f"Tracking {len(repos)} repositories")
+    
+    # Check for local LLM
+    console.print()
+    from .llm import detect_local_llm
+    llm_info = detect_local_llm()
+    if llm_info:
+        console.print(f"Local LLM: detected {llm_info.name} at {llm_info.url}")
+    else:
+        console.print(f"[{BRAND_MUTED}]Local LLM: not detected (install Ollama for offline generation)[/]")
+    
+    console.print()
+    print_next_steps([
+        "repr week               See what you worked on this week",
+        "repr generate --local   Save stories permanently",
+        "repr login              Unlock cloud sync and publishing",
+    ])
+
+
+# =============================================================================
+# GENERATE
+# =============================================================================
+
+@app.command()
+def generate(
     local: bool = typer.Option(
-        False,
-        "--local",
-        "-l",
-        help="Use local LLM (Ollama) instead of cloud.",
+        False, "--local", "-l",
+        help="Use local LLM (Ollama)",
     ),
-    model: Optional[str] = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help="Local model to use (default: llama3.2).",
+    cloud: bool = typer.Option(
+        False, "--cloud",
+        help="Use cloud LLM (requires login)",
     ),
-    api_base: Optional[str] = typer.Option(
-        None,
-        "--api-base",
-        help="Custom local LLM API endpoint.",
+    repo: Optional[Path] = typer.Option(
+        None, "--repo",
+        help="Generate for specific repo",
+        exists=True,
+        dir_okay=True,
     ),
-    offline: bool = typer.Option(
-        False,
-        "--offline",
-        help="Stats only, no AI analysis (no push).",
+    commits: Optional[str] = typer.Option(
+        None, "--commits",
+        help="Generate from specific commits (comma-separated)",
     ),
-    min_commits: int = typer.Option(
-        10,
-        "--min-commits",
-        help="Minimum number of commits required.",
+    batch_size: int = typer.Option(
+        5, "--batch-size",
+        help="Commits per story",
     ),
-    since: Optional[str] = typer.Option(
-        None,
-        "--since",
-        help="Only analyze commits after this point (SHA or date like '2026-01-01').",
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Preview what would be sent",
     ),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output progress as JSON (for extension).",
+    template: str = typer.Option(
+        "resume", "--template", "-t",
+        help="Template: resume, changelog, narrative, interview",
+    ),
+    prompt: Optional[str] = typer.Option(
+        None, "--prompt", "-p",
+        help="Custom prompt to append",
     ),
 ):
     """
-    Analyze repositories and generate profiles (one per repo).
-    
-    Each repository is analyzed separately, saved as {repo}_{date}.md,
-    and pushed to repr.dev immediately. Process halts on any failure.
+    Generate stories from commits.
     
     Examples:
-        repr analyze ~/code                              # OpenAI (default)
-        repr analyze ~/code --local --model llama3.2     # Local LLM (Ollama)
-        repr analyze ~/code --offline                    # Stats only, no push
-        repr analyze ~/code --since 2026-01-01           # Only commits after date
-        repr analyze ~/code --since abc123               # Only commits after SHA
-        repr analyze ~/code --json                       # JSON output for extension
+        repr generate --local
+        repr generate --cloud
+        repr generate --template changelog
+        repr generate --commits abc123,def456
     """
+    from .privacy import check_cloud_permission, log_cloud_operation
+    
+    # Determine mode
+    if cloud:
+        allowed, reason = check_cloud_permission("cloud_generation")
+        if not allowed:
+            print_error("Cloud generation blocked")
+            print_info(reason)
+            console.print()
+            print_info("Local generation is available:")
+            console.print("  repr generate --local")
+            raise typer.Exit(1)
+    
+    if not local and not cloud:
+        # Default: local if not signed in, cloud if signed in
+        if is_authenticated() and is_cloud_allowed():
+            cloud = True
+        else:
+            local = True
+    
     print_header()
     
-    mode = "offline" if offline else ("local" if local else "openai")
-    llm_config = get_llm_config()
-    
-    local_api_key = None
-    local_base_url = None
-    local_extraction_model = None
-    local_synthesis_model = None
-    
-    # Require authentication for non-offline modes (auto-push)
-    if mode != "offline":
-        if not is_authenticated():
-            print_error("Not logged in. Please run 'repr login' first.")
-            raise typer.Exit(1)
-    
-    if mode == "openai":
-        _, litellm_key = get_litellm_config()
-        if not litellm_key:
-            print_error("Not authenticated for LLM access. Please run 'repr login' first.")
-            raise typer.Exit(1)
-    
-    if mode == "local":
-        local_api_key = llm_config["local_api_key"] or "ollama"
-        local_base_url = api_base or llm_config["local_api_url"] or "http://localhost:11434/v1"
-        local_extraction_model = model or llm_config["extraction_model"] or "llama3.2"
-        local_synthesis_model = model or llm_config["synthesis_model"] or "llama3.2"
-        print_info(f"Using local LLM: {local_extraction_model} at {local_base_url}")
-    
-    if no_cache:
-        clear_cache()
-        if verbose:
-            print_info("Cache cleared")
-    
-    console.print("Discovering repositories...")
+    mode_str = "local LLM" if local else "cloud LLM"
+    console.print(f"Generating stories ({mode_str})...")
     console.print()
     
-    with create_simple_progress() as progress:
-        task = progress.add_task("Scanning directories...", total=None)
-        repos = discover_repos(root_paths=paths, use_cache=not no_cache, min_commits=min_commits)
+    # Get repos to analyze
+    if repo:
+        repo_paths = [repo]
+    else:
+        tracked = get_tracked_repos()
+        if not tracked:
+            print_warning("No repositories tracked.")
+            print_info("Run `repr init` or `repr repos add <path>` first.")
+            raise typer.Exit(1)
+        repo_paths = [Path(r["path"]) for r in tracked if Path(r["path"]).exists()]
     
-    if not repos:
-        print_warning("No repositories found in the specified paths.")
-        print_info(f"Make sure the paths contain git repositories with at least {min_commits} commits.")
+    if not repo_paths:
+        print_error("No valid repositories found")
         raise typer.Exit(1)
     
-    total_paths = sum(1 for p in paths)
-    console.print(f"Found [bold]{len(repos)}[/bold] repositories in {total_paths} path(s)")
-    console.print()
+    # Get commits
+    from .tools import get_commits_with_diffs, get_commits_by_shas
+    from .discovery import analyze_repo
     
-    for repo in repos:
-        languages = detect_languages(repo.path)
-        repo.languages = {lang: int(pct) for lang, pct in languages.items()}
-        repo.primary_language = max(languages, key=languages.get) if languages else None
+    total_stories = 0
     
-    filtered_repos = []
-    skipped_repos = []
-    
-    for repo in repos:
-        if is_config_only_repo(repo.path):
-            skipped_repos.append(repo)
+    for repo_path in repo_paths:
+        repo_info = analyze_repo(repo_path)
+        console.print(f"[bold]{repo_info.name}[/]")
+        
+        if commits:
+            # Specific commits
+            commit_shas = [s.strip() for s in commits.split(",")]
+            commit_list = get_commits_by_shas(repo_path, commit_shas)
         else:
-            filtered_repos.append(repo)
-    
-    if skipped_repos:
-        console.print(f"Skipping {len(skipped_repos)} config-only repos: {', '.join(r.name for r in skipped_repos)}")
-        console.print()
-    
-    if not filtered_repos:
-        print_warning("No analyzable repositories found (all were config-only).")
-        raise typer.Exit(1)
-    
-    console.print(f"Analyzing {len(filtered_repos)} repositories...")
-    console.print()
-    
-    # Process each repo individually
-    for i, repo in enumerate(filtered_repos, 1):
-        console.print(f"[bold][{i}/{len(filtered_repos)}] {repo.name}[/bold]")
+            # Recent commits
+            commit_list = get_commits_with_diffs(repo_path, count=50, days=90)
         
-        repo_metadata = {
-            "remote_url": repo.remote_url,
-            "commit_count": repo.commit_count,
-            "user_commit_count": repo.user_commit_count,
-            "primary_language": repo.primary_language,
-            "languages": repo.languages,
-            "contributors": repo.contributors,
-            "first_commit_date": repo.first_commit_date.isoformat() if repo.first_commit_date else None,
-            "last_commit_date": repo.last_commit_date.isoformat() if repo.last_commit_date else None,
-            "is_fork": repo.is_fork,
-            "description": repo.description,
-            "frameworks": repo.frameworks,
-            "has_tests": repo.has_tests,
-            "has_ci": repo.has_ci,
-        }
+        if not commit_list:
+            console.print(f"  [{BRAND_MUTED}]No commits found[/]")
+            continue
         
-        # Generate profile for this single repo
-        if mode == "offline":
-            profile_content = _generate_single_repo_offline_profile(repo, verbose=verbose)
-        else:
-            profile_content = asyncio.run(_run_single_repo_analysis(
-                repo,
-                api_key=local_api_key,
-                base_url=local_base_url,
-                extraction_model=local_extraction_model or llm_config["extraction_model"],
-                synthesis_model=local_synthesis_model or llm_config["synthesis_model"],
-                verbose=verbose,
-                since=since,
-            ))
+        # Dry run: show what would be sent
+        if dry_run:
+            console.print(f"  Would analyze {len(commit_list)} commits")
+            console.print(f"  Template: {template}")
+            for c in commit_list[:5]:
+                console.print(f"    • {c['sha']} {c['message'][:50]}")
+            if len(commit_list) > 5:
+                console.print(f"    ... and {len(commit_list) - 5} more")
+            continue
         
-        if not profile_content:
-            print_error(f"Failed to generate profile for {repo.name}. Halting.")
-            raise typer.Exit(1)
-        
-        # Save locally as {repo}_{date}.md
-        profile_path = save_repo_profile(profile_content, repo.name, repo_metadata)
-        console.print(f"  Saved: {profile_path.name}")
-        
-        # Push to backend (skip for offline mode)
-        if mode != "offline":
-            try:
-                result = asyncio.run(push_repo_profile(profile_content, repo.name, repo_metadata))
-                console.print(f"  [green]Pushed to repr.dev[/green]")
-                
-                # Mark as synced
-                update_sync_info(profile_path.name)
-            except (APIError, AuthError) as e:
-                print_error(f"Failed to push {repo.name}: {e}. Halting.")
-                raise typer.Exit(1)
-        
-        console.print()
-    
-    print_success(f"Completed: {len(filtered_repos)} repositories analyzed and pushed")
-    console.print()
-    print_next_steps(["Run [bold]repr profiles[/] to see all saved profiles"])
-
-
-def _generate_single_repo_offline_profile(repo: RepoInfo, verbose: bool = False) -> str:
-    """Generate offline profile for a single repository."""
-    lines = [f"# {repo.name}", ""]
-    
-    if verbose:
-        console.print(f"  Analyzing {repo.name}...", style=BRAND_MUTED)
-    
-    try:
-        analysis = analyze_repo(repo.path)
-        highlights = get_highlights(repo.path)
-    except Exception as e:
-        if verbose:
-            console.print(f"    Error: {e}", style="red")
-        return f"# {repo.name}\n\nFailed to analyze repository: {e}"
-    
-    meta = []
-    if repo.primary_language:
-        meta.append(f"**{repo.primary_language}**")
-    meta.append(f"{repo.commit_count} commits")
-    meta.append(repo.age_display)
-    lines.append(" | ".join(meta))
-    lines.append("")
-    
-    if highlights and highlights.get("domain"):
-        lines.append(f"*{highlights['domain'].replace('-', ' ').title()} Application*")
-        lines.append("")
-    
-    frameworks = analysis.get("frameworks", [])
-    if frameworks:
-        lines.append(f"**Frameworks:** {', '.join(frameworks)}")
-    
-    code_lines = analysis.get("summary", {}).get("code_lines", 0)
-    lines.append(f"**Codebase:** {code_lines:,} lines of code")
-    
-    has_tests = analysis.get("testing", {}).get("has_tests", False)
-    lines.append(f"**Testing:** {'Has tests' if has_tests else 'No tests detected'}")
-    lines.append("")
-    
-    if highlights and highlights.get("features"):
-        lines.append("## What was built")
-        lines.append("")
-        for f in highlights["features"][:6]:
-            lines.append(f"- {f['description']}")
-        lines.append("")
-    
-    if highlights and highlights.get("integrations"):
-        integration_names = [i["name"] for i in highlights["integrations"][:8]]
-        lines.append(f"**Integrations:** {', '.join(integration_names)}")
-        lines.append("")
-    
-    if highlights and highlights.get("achievements"):
-        lines.append("## Key contributions")
-        lines.append("")
-        for achievement in highlights["achievements"][:5]:
-            clean = achievement.strip()
-            if len(clean) > 100:
-                clean = clean[:97] + "..."
-            lines.append(f"- {clean}")
-        lines.append("")
-    
-    lines.append("---")
-    lines.append("*Generated by Repr CLI (offline mode)*")
-    
-    return "\n".join(lines)
-
-
-async def _run_single_repo_analysis(
-    repo: RepoInfo,
-    api_key: str = None,
-    base_url: str = None,
-    extraction_model: str = None,
-    synthesis_model: str = None,
-    verbose: bool = False,
-    since: str = None,
-) -> str | None:
-    """Run analysis for a single repository using OpenAI-compatible API."""
-    display = AnalysisDisplay()
-    display.repos.append({
-        "name": repo.name,
-        "language": repo.primary_language or "-",
-        "commits": str(repo.commit_count),
-        "age": repo.age_display,
-        "status": "pending",
-    })
-    
-    def progress_callback(step: str, detail: str, repo: str, progress: float):
-        display.update_progress(step=step, detail=detail, repo=repo, progress=progress)
-        for repo_data in display.repos:
-            if repo_data["name"] == repo:
-                if step == "Complete":
-                    repo_data["status"] = "completed"
-                elif step in ("Extracting", "Preparing", "Analyzing", "Synthesizing"):
-                    repo_data["status"] = "analyzing"
-    
-    try:
-        display.start()
-        
-        profile = await analyze_repo_openai(
-            repo,
-            api_key=api_key,
-            base_url=base_url,
-            extraction_model=extraction_model,
-            synthesis_model=synthesis_model,
-            verbose=verbose,
-            progress_callback=progress_callback,
-            since=since,
+        # Generate stories
+        stories = _generate_stories(
+            commits=commit_list,
+            repo_info=repo_info,
+            batch_size=batch_size,
+            local=local,
+            template=template,
+            custom_prompt=prompt,
         )
         
-        display.stop()
-        return profile
+        for story in stories:
+            console.print(f"  • {story['summary']}")
+            total_stories += 1
         
-    except Exception as e:
-        display.stop()
-        print_error(f"Analysis failed: {e}")
-        if verbose:
-            import traceback
-            console.print(traceback.format_exc(), style="red dim")
-        return None
+        # Log cloud operation if using cloud
+        if cloud and stories:
+            log_cloud_operation(
+                operation="cloud_generation",
+                destination="repr.dev",
+                payload_summary={
+                    "repo": repo_info.name,
+                    "commits": len(commit_list),
+                    "stories_generated": len(stories),
+                },
+                bytes_sent=len(str(commit_list)) // 2,  # Rough estimate
+            )
+        
+        console.print()
+    
+    if dry_run:
+        console.print()
+        console.print("Continue with generation? (run without --dry-run)")
+    else:
+        print_success(f"Generated {total_stories} stories")
+        console.print()
+        console.print(f"Stories saved to: {STORIES_DIR}")
+        print_next_steps([
+            "repr stories            View your stories",
+            "repr push               Publish to repr.dev (requires login)",
+        ])
+
+
+def _generate_stories(
+    commits: list[dict],
+    repo_info,
+    batch_size: int,
+    local: bool,
+    template: str = "resume",
+    custom_prompt: str | None = None,
+) -> list[dict]:
+    """Generate stories from commits using LLM."""
+    from .openai_analysis import get_openai_client, extract_commit_batch
+    from .templates import build_generation_prompt
+    
+    stories = []
+    
+    # Split into batches
+    batches = [
+        commits[i:i + batch_size]
+        for i in range(0, len(commits), batch_size)
+    ]
+    
+    for i, batch in enumerate(batches):
+        try:
+            # Build prompt with template
+            system_prompt, user_prompt = build_generation_prompt(
+                template_name=template,
+                repo_name=repo_info.name,
+                commits=batch,
+                custom_prompt=custom_prompt,
+            )
+            
+            # Get LLM client
+            if local:
+                llm_config = get_llm_config()
+                client = get_openai_client(
+                    api_key=llm_config.get("local_api_key") or "ollama",
+                    base_url=llm_config.get("local_api_url") or "http://localhost:11434/v1",
+                )
+                model = llm_config.get("local_model") or llm_config.get("extraction_model") or "llama3.2"
+            else:
+                client = get_openai_client()
+                model = None  # Use default
+            
+            # Extract story from batch
+            content = asyncio.run(extract_commit_batch(
+                client=client,
+                commits=batch,
+                batch_num=i + 1,
+                total_batches=len(batches),
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            ))
+            
+            if not content or content.startswith("[Batch"):
+                continue
+            
+            # Extract summary (first non-empty line)
+            lines = [l.strip() for l in content.split("\n") if l.strip()]
+            summary = lines[0][:100] if lines else "Story"
+            # Clean up summary
+            summary = summary.lstrip("#-•* ").strip()
+            
+            # Build metadata
+            commit_shas = [c["full_sha"] for c in batch]
+            first_date = min(c["date"] for c in batch)
+            last_date = max(c["date"] for c in batch)
+            total_files = sum(len(c.get("files", [])) for c in batch)
+            total_adds = sum(c.get("insertions", 0) for c in batch)
+            total_dels = sum(c.get("deletions", 0) for c in batch)
+            
+            metadata = {
+                "summary": summary,
+                "repo_name": repo_info.name,
+                "repo_path": str(repo_info.path),
+                "commit_shas": commit_shas,
+                "first_commit_at": first_date,
+                "last_commit_at": last_date,
+                "files_changed": total_files,
+                "lines_added": total_adds,
+                "lines_removed": total_dels,
+                "generated_locally": local,
+                "template": template,
+                "needs_review": False,
+            }
+            
+            # Save story
+            story_id = save_story(content, metadata)
+            metadata["id"] = story_id
+            stories.append(metadata)
+            
+        except Exception as e:
+            console.print(f"  [{BRAND_MUTED}]Batch {i+1} failed: {e}[/]")
+    
+    return stories
+
+
+# =============================================================================
+# QUICK REFLECTION COMMANDS
+# =============================================================================
+
+@app.command()
+def week(
+    save: bool = typer.Option(
+        False, "--save",
+        help="Save as a permanent story",
+    ),
+):
+    """
+    Show what you worked on this week.
+    
+    Example:
+        repr week
+        repr week --save
+    """
+    _show_summary_since("this week", days=7, save=save)
 
 
 @app.command()
-def view(
-    raw: bool = typer.Option(
-        False,
-        "--raw",
-        "-r",
-        help="Output plain markdown (for piping).",
-    ),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
-    profile_name: Optional[str] = typer.Option(
-        None,
-        "--profile",
-        "-p",
-        help="View a specific profile by name.",
+def since(
+    date: str = typer.Argument(..., help="Date or time reference (e.g., 'monday', '2026-01-01', '3 days ago')"),
+    save: bool = typer.Option(
+        False, "--save",
+        help="Save as a permanent story",
     ),
 ):
     """
-    View the latest profile in the terminal.
-
-    Example:
-        repr view
-        repr view --profile myrepo_2025-12-26
-        repr view --raw > profile.md
-        repr view --json
+    Show work since a specific date or time.
+    
+    Examples:
+        repr since monday
+        repr since "3 days ago"
+        repr since 2026-01-01
     """
-    # Get profile path
-    if profile_name:
-        profile_path = get_profile(profile_name)
-        if not profile_path:
-            print_error(f"Profile not found: {profile_name}")
-            raise typer.Exit(1)
-    else:
-        profile_path = get_latest_profile()
-        if not profile_path:
-            print_error("No profiles found.")
-            print_info("Run 'repr analyze <paths>' to generate a profile.")
-            raise typer.Exit(1)
+    _show_summary_since(date, save=save)
 
-    content = profile_path.read_text()
 
-    if json_output:
-        # JSON output for machine consumption
-        sync_info = get_sync_info()
-        is_synced = sync_info.get("last_profile") == profile_path.name
-        metadata = get_profile_metadata(profile_path.stem)
+@app.command()
+def standup(
+    days: int = typer.Option(
+        3, "--days",
+        help="Number of days to look back",
+    ),
+):
+    """
+    Quick summary for daily standup (last 3 days).
+    
+    Example:
+        repr standup
+        repr standup --days 5
+    """
+    _show_summary_since(f"last {days} days", days=days, save=False)
 
-        output = {
-            "content": content,
-            "metadata": {
-                "name": profile_path.stem,
-                "synced": is_synced,
-                "modified": datetime.fromtimestamp(profile_path.stat().st_mtime).isoformat(),
-                "size": profile_path.stat().st_size,
-                "repos": metadata.get("repos", []) if metadata else [],
-            },
-        }
-        print(json.dumps(output, indent=2))
-        return
 
-    if raw:
-        # Raw output for piping
-        print(content)
-    else:
-        # Pretty display
-        sync_info = get_sync_info()
-        is_synced = sync_info.get("last_profile") == profile_path.name
-
-        status = f"[{BRAND_SUCCESS}]✓ Synced[/]" if is_synced else f"[{BRAND_MUTED}]○ Local only[/]"
-
-        print_panel(
-            f"Profile: {profile_path.name}",
-            f"{status}",
-            border_color=BRAND_PRIMARY,
-        )
+def _show_summary_since(label: str, days: int = None, save: bool = False):
+    """Show summary of work since a date."""
+    from .tools import get_commits_with_diffs
+    from .discovery import analyze_repo
+    
+    print_header()
+    
+    tracked = get_tracked_repos()
+    if not tracked:
+        print_warning("No repositories tracked.")
+        print_info("Run `repr init` first.")
+        raise typer.Exit(1)
+    
+    console.print(f"📊 Work since {label}")
+    console.print()
+    
+    total_commits = 0
+    all_summaries = []
+    
+    for repo_info in tracked:
+        repo_path = Path(repo_info["path"])
+        if not repo_path.exists():
+            continue
+        
+        commits = get_commits_with_diffs(repo_path, count=100, days=days or 30)
+        if not commits:
+            continue
+        
+        repo_name = repo_path.name
+        console.print(f"[bold]{repo_name}[/] ({len(commits)} commits):")
+        
+        # Group commits by rough topic (simple heuristic)
+        for c in commits[:5]:
+            msg = c["message"].split("\n")[0][:60]
+            console.print(f"  • {msg}")
+        
+        if len(commits) > 5:
+            console.print(f"  [{BRAND_MUTED}]... and {len(commits) - 5} more[/]")
+        
+        total_commits += len(commits)
         console.print()
+    
+    console.print(f"Total: {total_commits} commits")
+    
+    if not save:
+        console.print()
+        console.print(f"[{BRAND_MUTED}]This summary wasn't saved. Run with --save to create a story.[/]")
+
+
+# =============================================================================
+# STORIES MANAGEMENT
+# =============================================================================
+
+@app.command()
+def stories(
+    repo: Optional[str] = typer.Option(None, "--repo", help="Filter by repository"),
+    needs_review: bool = typer.Option(False, "--needs-review", help="Show only stories needing review"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    List all stories.
+    
+    Example:
+        repr stories
+        repr stories --repo myproject
+        repr stories --needs-review
+    """
+    story_list = list_stories(repo_name=repo, needs_review=needs_review)
+    
+    if json_output:
+        print(json.dumps(story_list, indent=2, default=str))
+        return
+    
+    if not story_list:
+        print_info("No stories found.")
+        print_info("Run `repr generate` to create stories from your commits.")
+        raise typer.Exit()
+    
+    console.print(f"[bold]Stories[/] ({len(story_list)} total)")
+    console.print()
+    
+    for story in story_list[:20]:
+        # Status indicator
+        if story.get("needs_review"):
+            status = f"[{BRAND_WARNING}]⚠[/]"
+        elif story.get("pushed_at"):
+            status = f"[{BRAND_SUCCESS}]✓[/]"
+        else:
+            status = f"[{BRAND_MUTED}]○[/]"
+        
+        summary = story.get("summary", "Untitled")[:60]
+        repo_name = story.get("repo_name", "unknown")
+        created = format_relative_time(story.get("created_at", ""))
+        
+        console.print(f"{status} {summary}")
+        console.print(f"  [{BRAND_MUTED}]{repo_name} • {created}[/]")
+        console.print()
+    
+    if len(story_list) > 20:
+        console.print(f"[{BRAND_MUTED}]... and {len(story_list) - 20} more[/]")
+
+
+@app.command()
+def story(
+    action: str = typer.Argument(..., help="Action: view, edit, delete, hide, feature, regenerate"),
+    story_id: str = typer.Argument(..., help="Story ID (ULID)"),
+):
+    """
+    Manage a single story.
+    
+    Examples:
+        repr story view 01ARYZ6S41TSV4RRFFQ69G5FAV
+        repr story delete 01ARYZ6S41TSV4RRFFQ69G5FAV
+    """
+    result = load_story(story_id)
+    
+    if not result:
+        print_error(f"Story not found: {story_id}")
+        raise typer.Exit(1)
+    
+    content, metadata = result
+    
+    if action == "view":
         print_markdown(content)
         console.print()
-        console.print(f"[{BRAND_MUTED}]Press q to quit, ↑↓ to scroll[/]")
+        console.print(f"[{BRAND_MUTED}]ID: {story_id}[/]")
+        console.print(f"[{BRAND_MUTED}]Created: {metadata.get('created_at', 'unknown')}[/]")
+    
+    elif action == "edit":
+        # Open in $EDITOR
+        import subprocess
+        
+        editor = os.environ.get("EDITOR", "vim")
+        md_path = STORIES_DIR / f"{story_id}.md"
+        
+        subprocess.run([editor, str(md_path)])
+        print_success("Story updated")
+    
+    elif action == "delete":
+        if confirm(f"Delete story '{metadata.get('summary', story_id)}'?"):
+            delete_story(story_id)
+            print_success("Story deleted")
+        else:
+            print_info("Cancelled")
+    
+    elif action == "hide":
+        update_story_metadata(story_id, {"is_hidden": True})
+        print_success("Story hidden from profile")
+    
+    elif action == "feature":
+        update_story_metadata(story_id, {"is_featured": True})
+        print_success("Story featured on profile")
+    
+    elif action == "regenerate":
+        print_info("Regeneration not yet implemented")
+        print_info("Use `repr generate --commits <sha>` with specific commits")
+    
+    else:
+        print_error(f"Unknown action: {action}")
+        print_info("Valid actions: view, edit, delete, hide, feature, regenerate")
+        raise typer.Exit(1)
 
+
+@app.command("review")
+def stories_review():
+    """
+    Interactive review workflow for stories needing review.
+    
+    Example:
+        repr review
+    """
+    from .storage import get_stories_needing_review
+    
+    needs_review = get_stories_needing_review()
+    
+    if not needs_review:
+        print_success("No stories need review!")
+        raise typer.Exit()
+    
+    console.print(f"[bold]{len(needs_review)} stories need review[/]")
+    console.print()
+    
+    for i, story in enumerate(needs_review):
+        console.print(f"[bold]Story {i+1} of {len(needs_review)}[/]")
+        console.print()
+        
+        # Show story summary
+        console.print(f"⚠ \"{story.get('summary', 'Untitled')}\"")
+        console.print(f"  {story.get('repo_name', 'unknown')} • {len(story.get('commit_shas', []))} commits")
+        console.print()
+        
+        # Load and show content preview
+        result = load_story(story["id"])
+        if result:
+            content, _ = result
+            # Show first 500 chars
+            preview = content[:500]
+            if len(content) > 500:
+                preview += "..."
+            console.print(preview)
+        
+        console.print()
+        
+        # Prompt for action
+        action = Prompt.ask(
+            "[a] Approve  [e] Edit  [d] Delete  [s] Skip  [q] Quit",
+            choices=["a", "e", "d", "s", "q"],
+            default="s",
+        )
+        
+        if action == "a":
+            update_story_metadata(story["id"], {"needs_review": False})
+            print_success("Story approved")
+        elif action == "e":
+            editor = os.environ.get("EDITOR", "vim")
+            md_path = STORIES_DIR / f"{story['id']}.md"
+            import subprocess
+            subprocess.run([editor, str(md_path)])
+            update_story_metadata(story["id"], {"needs_review": False})
+            print_success("Story updated and approved")
+        elif action == "d":
+            if confirm("Delete this story?"):
+                delete_story(story["id"])
+                print_success("Story deleted")
+        elif action == "q":
+            break
+        
+        console.print()
+
+
+# =============================================================================
+# CLOUD OPERATIONS
+# =============================================================================
+
+@app.command()
+def push(
+    story_id: Optional[str] = typer.Option(None, "--story", help="Push specific story"),
+    all_stories: bool = typer.Option(False, "--all", help="Push all unpushed stories"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would be pushed"),
+):
+    """
+    Publish stories to repr.dev.
+    
+    Examples:
+        repr push
+        repr push --story 01ARYZ6S41TSV4RRFFQ69G5FAV
+    """
+    from .privacy import check_cloud_permission, log_cloud_operation
+    
+    allowed, reason = check_cloud_permission("push")
+    if not allowed:
+        print_error("Publishing blocked")
+        print_info(reason)
+        raise typer.Exit(1)
+    
+    # Get stories to push
+    if story_id:
+        result = load_story(story_id)
+        if not result:
+            print_error(f"Story not found: {story_id}")
+            raise typer.Exit(1)
+        content, metadata = result
+        to_push = [{"id": story_id, "content": content, **metadata}]
+    else:
+        to_push = get_unpushed_stories()
+    
+    if not to_push:
+        print_success("All stories already synced!")
+        raise typer.Exit()
+    
+    console.print(f"Publishing {len(to_push)} story(ies) to repr.dev...")
+    console.print()
+    
+    if dry_run:
+        for s in to_push:
+            console.print(f"  • {s.get('summary', s.get('id'))}")
+        console.print()
+        console.print("Run without --dry-run to publish")
+        raise typer.Exit()
+    
+    # Actually push
+    from .api import push_story as api_push_story
+    
+    pushed = 0
+    for s in to_push:
+        try:
+            content, meta = load_story(s["id"])
+            asyncio.run(api_push_story({**meta, "content": content}))
+            mark_story_pushed(s["id"])
+            console.print(f"  [{BRAND_SUCCESS}]✓[/] {s.get('summary', s.get('id'))[:50]}")
+            pushed += 1
+        except (APIError, AuthError) as e:
+            console.print(f"  [{BRAND_ERROR}]✗[/] {s.get('summary', s.get('id'))[:50]}: {e}")
+    
+    # Log operation
+    if pushed > 0:
+        log_cloud_operation(
+            operation="push",
+            destination="repr.dev",
+            payload_summary={"stories_pushed": pushed},
+            bytes_sent=0,
+        )
+    
+    console.print()
+    print_success(f"Pushed {pushed}/{len(to_push)} stories")
+
+
+@app.command()
+def sync():
+    """
+    Sync stories across devices.
+    
+    Example:
+        repr sync
+    """
+    from .privacy import check_cloud_permission
+    
+    allowed, reason = check_cloud_permission("sync")
+    if not allowed:
+        print_error("Sync blocked")
+        print_info(reason)
+        raise typer.Exit(1)
+    
+    console.print("Syncing with repr.dev...")
+    console.print()
+    
+    unpushed = get_unpushed_stories()
+    
+    if unpushed:
+        console.print(f"↑ {len(unpushed)} local stories to push")
+        if confirm("Upload these stories?"):
+            # Reuse push logic
+            from .api import push_story as api_push_story
+            for s in unpushed:
+                try:
+                    content, meta = load_story(s["id"])
+                    asyncio.run(api_push_story({**meta, "content": content}))
+                    mark_story_pushed(s["id"])
+                except Exception:
+                    pass
+            print_success(f"Pushed {len(unpushed)} stories")
+    else:
+        console.print(f"[{BRAND_SUCCESS}]✓[/] All stories synced")
+
+
+@app.command()
+def pull():
+    """
+    Pull remote stories to local device.
+    
+    Example:
+        repr pull
+    """
+    from .privacy import check_cloud_permission
+    
+    allowed, reason = check_cloud_permission("pull")
+    if not allowed:
+        print_error("Pull blocked")
+        print_info(reason)
+        raise typer.Exit(1)
+    
+    console.print("Pulling from repr.dev...")
+    console.print()
+    
+    # TODO: Implement actual pull from API
+    print_info("Pull from cloud not yet implemented")
+    print_info("Local stories are preserved")
+
+
+# =============================================================================
+# COMMITS
+# =============================================================================
+
+@app.command("commits")
+def list_commits(
+    repo: Optional[str] = typer.Option(None, "--repo", help="Filter by repo name"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Number of commits"),
+    since: Optional[str] = typer.Option(None, "--since", help="Since date"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    List recent commits across all tracked repos.
+    
+    Example:
+        repr commits --limit 10
+        repr commits --repo myproject
+    """
+    from .tools import get_commits_with_diffs
+    
+    tracked = get_tracked_repos()
+    if not tracked:
+        print_warning("No repositories tracked.")
+        raise typer.Exit(1)
+    
+    all_commits = []
+    
+    for repo_info in tracked:
+        repo_path = Path(repo_info["path"])
+        if repo and repo_path.name != repo:
+            continue
+        if not repo_path.exists():
+            continue
+        
+        commits = get_commits_with_diffs(repo_path, count=limit, days=90)
+        for c in commits:
+            c["repo_name"] = repo_path.name
+        all_commits.extend(commits)
+    
+    # Sort by date
+    all_commits.sort(key=lambda c: c.get("date", ""), reverse=True)
+    all_commits = all_commits[:limit]
+    
+    if json_output:
+        print(json.dumps(all_commits, indent=2, default=str))
+        return
+    
+    if not all_commits:
+        print_info("No commits found")
+        raise typer.Exit()
+    
+    console.print(f"[bold]Recent Commits[/] ({len(all_commits)})")
+    console.print()
+    
+    current_repo = None
+    for c in all_commits:
+        if c["repo_name"] != current_repo:
+            current_repo = c["repo_name"]
+            console.print(f"[bold]{current_repo}:[/]")
+        
+        sha = c.get("sha", "")[:7]
+        msg = c.get("message", "").split("\n")[0][:50]
+        date = format_relative_time(c.get("date", ""))
+        console.print(f"  {sha}  {msg}  [{BRAND_MUTED}]{date}[/]")
+    
+    console.print()
+    print_info("Generate stories: repr generate --commits <sha1>,<sha2>")
+
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
 
 @app.command()
 def login():
     """
-    Authenticate with Repr using device code flow.
-    
-    Opens a browser where you can sign in, then automatically
-    completes the authentication.
+    Authenticate with repr.dev.
     
     Example:
         repr login
@@ -551,10 +1012,10 @@ def login():
         email = user.get("email", "unknown") if user else "unknown"
         print_info(f"Already authenticated as {email}")
         
-        if not Confirm.ask("Re-authenticate?"):
+        if not confirm("Re-authenticate?"):
             raise typer.Exit()
     
-    console.print("[bold]🔐  Authenticate with Repr[/]")
+    console.print("[bold]Authenticate with repr[/]")
     console.print()
     
     async def run_auth():
@@ -571,18 +1032,12 @@ def login():
         def on_progress(remaining):
             mins = int(remaining // 60)
             secs = int(remaining % 60)
-            # Use carriage return for updating in place
-            console.print(
-                f"\rWaiting for authorization... expires in {mins}:{secs:02d}  ",
-                end="",
-            )
+            console.print(f"\rWaiting for authorization... {mins}:{secs:02d}  ", end="")
         
         def on_success(token):
             console.print()
             console.print()
             print_success(f"Authenticated as {token.email}")
-            console.print()
-            console.print(f"  Token saved to {CONFIG_DIR / 'config.json'}")
         
         def on_error(error):
             console.print()
@@ -599,1193 +1054,1164 @@ def login():
             raise typer.Exit(1)
     
     asyncio.run(run_auth())
+    
+    # Check for local stories
+    local_count = get_story_count()
+    if local_count > 0:
+        console.print()
+        console.print(f"You have {local_count} local stories.")
+        console.print("Run `repr sync` to upload them.")
 
 
 @app.command()
 def logout():
     """
-    Clear authentication and logout.
-
+    Sign out and clear credentials.
+    
     Example:
         repr logout
     """
     if not is_authenticated():
         print_info("Not currently authenticated.")
         raise typer.Exit()
-
+    
     auth_logout()
-
-    print_success("Logged out")
+    
+    print_success("Signed out")
     console.print()
-    console.print(f"  Token removed from {CONFIG_DIR / 'config.json'}")
-    console.print(f"  Local profiles preserved in {PROFILES_DIR}")
-
-
-@app.command()
-def status(
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
-):
-    """
-    Show CLI status and health information.
-
-    Quick status check showing authentication, profiles, and sync state.
-
-    Example:
-        repr status
-        repr status --json
-    """
-    # Gather status information
-    authenticated = is_authenticated()
-    user = get_current_user() if authenticated else None
-    user_email = user.get("email") if user else None
-
-    # Get version
-    version = "0.1.1"  # TODO: Pull from package metadata
-
-    # Count profiles
-    saved_profiles = list_profiles()
-    profiles_count = len(saved_profiles)
-
-    # Get last analyze time (from most recent profile)
-    last_analyze = None
-    if saved_profiles:
-        last_analyze = saved_profiles[0]["modified"].isoformat()
-
-    # Count stories (placeholder - will be implemented when stories backend is ready)
-    stories_count = 0  # TODO: Query from backend or local cache
-
-    # Check if there are unsynced profiles
-    pending_sync = any(not p["synced"] for p in saved_profiles)
-
-    if json_output:
-        # JSON output for machine consumption
-        output = {
-            "version": version,
-            "authenticated": authenticated,
-            "user_email": user_email,
-            "api_base": get_api_base(),
-            "last_analyze": last_analyze,
-            "profiles_count": profiles_count,
-            "stories_count": stories_count,
-            "pending_sync": pending_sync,
-        }
-        print(json.dumps(output, indent=2))
-        return
-
-    # Pretty terminal output
-    print_header()
-    console.print("[bold]Repr CLI Status[/]")
-    console.print()
-
-    # Version and API
-    console.print(f"  Version:  {version}")
-    console.print(f"  API Base: {get_api_base()}")
-    console.print()
-
-    # Authentication
-    if authenticated:
-        console.print(f"  Auth:     [{BRAND_SUCCESS}]✓ Authenticated as {user_email}[/]")
-    else:
-        console.print(f"  Auth:     [{BRAND_MUTED}]○ Not authenticated[/]")
-    console.print()
-
-    # Profiles and Stories
-    console.print(f"  Profiles: {profiles_count}")
-    console.print(f"  Stories:  {stories_count}")
-
-    if last_analyze:
-        last_time = datetime.fromisoformat(last_analyze)
-        console.print(f"  Last analyze: {last_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    if pending_sync:
-        console.print(f"  Sync:     [{BRAND_MUTED}]⚠ Unsynced profiles[/]")
-    else:
-        console.print(f"  Sync:     [{BRAND_SUCCESS}]✓ All synced[/]")
-    console.print()
+    console.print(f"  Local stories preserved in {STORIES_DIR}")
 
 
 @app.command()
 def whoami(
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """
-    Show current user info and public profile URL.
-
+    Show current user.
+    
     Example:
         repr whoami
-        repr whoami --json
     """
     if not is_authenticated():
         if json_output:
-            print(json.dumps({"error": "Not authenticated", "code": "NOT_AUTHENTICATED"}))
+            print(json.dumps({"error": "Not authenticated"}))
         else:
-            print_error("Not authenticated")
-            print_info("Run 'repr login' to authenticate")
+            print_info("Not signed in")
+            print_info("Run `repr login` to sign in")
         raise typer.Exit(1)
-
+    
     user = get_current_user()
-    if not user:
-        if json_output:
-            print(json.dumps({"error": "Failed to get user info", "code": "USER_INFO_ERROR"}))
-        else:
-            print_error("Failed to get user info")
-        raise typer.Exit(1)
-
-    email = user.get("email")
-    user_id = user.get("id")
-
-    # Fetch username and profile URL from backend
-    username = None
-    profile_url = None
-    try:
-        import asyncio
-        from .api import get_public_profile_settings
-        settings = asyncio.run(get_public_profile_settings())
-        username = settings.get("username")
-        profile_url = settings.get("profile_url")
-    except Exception:
-        # Silently fall back to None if we can't fetch settings
-        pass
-
-    if json_output:
-        # JSON output for machine consumption
-        output = {
-            "email": email,
-            "user_id": user_id,
-            "username": username,
-            "profile_url": profile_url,
-        }
-        print(json.dumps(output, indent=2))
-        return
-
-    # Pretty terminal output
-    print_header()
-    console.print("[bold]Current User[/]")
-    console.print()
-    console.print(f"  Email:    {email}")
-    console.print(f"  User ID:  {user_id}")
-
-    if username:
-        console.print(f"  Username: {username}")
-        console.print(f"  Profile:  {profile_url}")
-    else:
-        console.print()
-        console.print(f"  [{BRAND_MUTED}]No public profile set up yet[/]")
-        console.print(f"  [{BRAND_MUTED}]Visit https://repr.dev to set your username[/]")
-    console.print()
-
-
-@app.command()
-def profiles(
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
-):
-    """
-    List all saved profiles.
-
-    Example:
-        repr profiles
-        repr profiles --json
-    """
-    saved_profiles = list_profiles()
-
-    if json_output:
-        # JSON output for machine consumption
-        output = []
-        for profile in saved_profiles:
-            output.append({
-                "name": profile["name"],
-                "path": str(profile["path"]),
-                "synced": profile["synced"],
-                "size": profile["size"],
-                "modified": profile["modified"].isoformat(),
-                "repo_count": len(profile.get("repos", [])),
-            })
-        print(json.dumps(output, indent=2))
-        return
-
-    if not saved_profiles:
-        print_info("No profiles found.")
-        print_info("Run 'repr analyze <paths>' to generate a profile.")
-        raise typer.Exit()
-
-    print_panel("Saved Profiles", "", border_color=BRAND_PRIMARY)
-    console.print()
-
-    table = create_profile_table()
-
-    for profile in saved_profiles:
-        status = f"[{BRAND_SUCCESS}]✓ synced[/]" if profile["synced"] else f"[{BRAND_MUTED}]○ local only[/]"
-
-        table.add_row(
-            profile["name"],
-            str(profile["project_count"]),
-            format_bytes(profile["size"]),
-            status,
-        )
-
-    console.print(table)
-    console.print()
-    console.print(f"Storage: {PROFILES_DIR}")
-    console.print()
-    console.print("[bold]Commands:[/]")
-    console.print(f"  repr view --profile {saved_profiles[0]['name']}")
-    if not saved_profiles[0]["synced"]:
-        console.print(f"  repr push --profile {saved_profiles[0]['name']}")
-
-
-@app.command()
-def push(
-    profile_name: Optional[str] = typer.Option(
-        None,
-        "--profile",
-        "-p",
-        help="Push a specific profile by name (default: all unsynced profiles).",
-    ),
-):
-    """
-    Push local profiles to repr.dev.
-    
-    By default, pushes all unsynced profiles. Use --profile to push a specific one.
-    
-    Examples:
-        repr push                              # Push all unsynced profiles
-        repr push --profile myrepo_2025-12-26  # Push specific profile
-    """
-    if not is_authenticated():
-        print_error("Not logged in. Please run 'repr login' first.")
-        raise typer.Exit(1)
-    
-    print_header()
-    
-    # Get profiles to push
-    all_profiles = list_profiles()
-    
-    if not all_profiles:
-        print_info("No profiles found.")
-        print_info("Run 'repr analyze <paths>' to generate profiles first.")
-        raise typer.Exit()
-    
-    if profile_name:
-        # Push specific profile
-        profiles_to_push = [p for p in all_profiles if p["name"] == profile_name]
-        if not profiles_to_push:
-            print_error(f"Profile not found: {profile_name}")
-            raise typer.Exit(1)
-    else:
-        # Push all unsynced profiles
-        profiles_to_push = [p for p in all_profiles if not p["synced"]]
-        
-        if not profiles_to_push:
-            print_success("All profiles are already synced!")
-            raise typer.Exit()
-    
-    console.print(f"Pushing {len(profiles_to_push)} profile(s) to repr.dev...")
-    console.print()
-    
-    pushed_count = 0
-    failed_count = 0
-    
-    for profile in profiles_to_push:
-        # Read profile content
-        content = profile["path"].read_text()
-        
-        # Load metadata if available
-        metadata = get_profile_metadata(profile["name"])
-        
-        if metadata and "repo" in metadata:
-            # This is a per-repo profile
-            repo_metadata = metadata["repo"]
-            repo_name = repo_metadata.get("repo_name") or profile["name"].rsplit("_", 1)[0]
-            
-            console.print(f"  Pushing {repo_name}...", end=" ")
-            
-            try:
-                asyncio.run(push_repo_profile(content, repo_name, repo_metadata))
-                console.print("[green]✓[/]")
-                
-                # Mark as synced
-                update_sync_info(profile["name"])
-                pushed_count += 1
-                
-            except (APIError, AuthError) as e:
-                console.print(f"[red]✗ {e}[/]")
-                failed_count += 1
-        else:
-            # Legacy profile without metadata - skip with warning
-            console.print(f"  [yellow]⚠[/] Skipping {profile['name']} (no metadata)")
-            console.print(f"    Re-analyze to create proper repo profiles")
-            failed_count += 1
-    
-    console.print()
-    
-    if pushed_count > 0:
-        print_success(f"Pushed {pushed_count} profile(s)")
-    
-    if failed_count > 0:
-        print_warning(f"Failed to push {failed_count} profile(s)")
-    
-    if pushed_count > 0 and failed_count == 0:
-        console.print()
-        print_next_steps([
-            "View your profiles at https://repr.dev/profile",
-            "Run [bold]repr analyze <paths>[/] to update your profiles",
-        ])
-
-
-@app.command()
-def stories(
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
-    repo: Optional[str] = typer.Option(
-        None,
-        "--repo",
-        help="Filter by repository name.",
-    ),
-    since: Optional[str] = typer.Option(
-        None,
-        "--since",
-        help="Filter by date (e.g., '1 week ago', '2026-01-01').",
-    ),
-    limit: int = typer.Option(
-        50,
-        "--limit",
-        help="Maximum stories to return (default: 50).",
-    ),
-    technologies: Optional[str] = typer.Option(
-        None,
-        "--technologies",
-        help="Filter by technology (comma-separated, e.g., 'React,FastAPI').",
-    ),
-):
-    """
-    List commit stories.
-
-    Stories are atomic units of work extracted from your commit history.
-    They represent meaningful accomplishments that are stored on repr.dev.
-
-    Examples:
-        repr stories                                    # List all stories
-        repr stories --json                             # JSON output
-        repr stories --repo myproject                   # Filter by repo
-        repr stories --since "1 week ago"               # Recent stories
-        repr stories --technologies React,TypeScript    # Filter by tech
-    """
-    if not is_authenticated():
-        if json_output:
-            print(json.dumps({"error": "Not authenticated", "code": "NOT_AUTHENTICATED"}))
-        else:
-            print_error("Not authenticated")
-            print_info("Run 'repr login' to authenticate")
-        raise typer.Exit(1)
-
-    try:
-        result = asyncio.run(api_get_stories(
-            repo_name=repo,
-            since=since,
-            technologies=technologies,
-            limit=limit,
-        ))
-    except (APIError, AuthError) as e:
-        if json_output:
-            print(json.dumps({"error": str(e), "code": "API_ERROR"}))
-        else:
-            print_error(str(e))
-        raise typer.Exit(1)
-
-    stories_list = result.get("stories", [])
-    total = result.get("total", 0)
-
-    if json_output:
-        # JSON output for machine consumption
-        print(json.dumps(result, indent=2, default=str))
-        return
-
-    # Pretty terminal output
-    if not stories_list:
-        print_info("No stories found.")
-        print_info("Run 'repr analyze <paths>' to generate stories from your commits.")
-        raise typer.Exit()
-
-    print_panel(f"Commit Stories ({total} total)", "", border_color=BRAND_PRIMARY)
-    console.print()
-
-    for story in stories_list:
-        # Story summary as header
-        console.print(f"[bold]{story.get('summary', 'Untitled')}[/]")
-        
-        # Technologies
-        techs = story.get("technologies", [])
-        if techs:
-            tech_str = " ".join(f"[{BRAND_PRIMARY}]{t}[/]" for t in techs[:5])
-            console.print(f"  {tech_str}")
-        
-        # Metadata line
-        repo_name = story.get("repo_name", "unknown")
-        files_changed = story.get("files_changed", 0)
-        lines_added = story.get("lines_added", 0)
-        lines_removed = story.get("lines_removed", 0)
-        last_commit_at = story.get("last_commit_at", "")
-        
-        if last_commit_at:
-            try:
-                dt = datetime.fromisoformat(last_commit_at.replace("Z", "+00:00"))
-                date_str = dt.strftime("%Y-%m-%d")
-            except (ValueError, TypeError):
-                date_str = str(last_commit_at)[:10]
-        else:
-            date_str = "unknown"
-        
-        console.print(
-            f"  [{BRAND_MUTED}]{repo_name} • {files_changed} files • "
-            f"+{lines_added} -{lines_removed} • {date_str}[/]"
-        )
-        console.print()
-
-    if total > len(stories_list):
-        console.print(f"[{BRAND_MUTED}]Showing {len(stories_list)} of {total} stories. Use --limit to see more.[/]")
-
-
-@app.command(name="config")
-def show_config(
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
-):
-    """
-    Show current configuration and API endpoints.
-
-    Useful for debugging and verifying backend connection.
-
-    Example:
-        repr config
-        repr --dev config
-        repr config --json
-    """
-
-    if json_output:
-        # JSON output for machine consumption
-        user = get_current_user() if is_authenticated() else None
-        llm_config = get_llm_config()
-        _, litellm_key = get_litellm_config()
-
-        output = {
-            "auth": {
-                "authenticated": is_authenticated(),
-                "user_email": user.get("email") if user else None,
-                "litellm_authenticated": bool(litellm_key),
-            },
-            "llm": {
-                "extraction_model": llm_config['extraction_model'] or DEFAULT_EXTRACTION_MODEL,
-                "synthesis_model": llm_config['synthesis_model'] or DEFAULT_SYNTHESIS_MODEL,
-                "local_api_url": llm_config['local_api_url'],
-                "local_api_key_set": bool(llm_config['local_api_key']),
-            },
-            "api_base": get_api_base(),
-            "is_authenticated": is_authenticated(),
-            "dev_mode": is_dev_mode(),
-        }
-        print(json.dumps(output, indent=2))
-        return
-
-    console.print("[bold]Repr CLI Configuration[/]")
-    console.print()
-
-    mode = "[green]Development (localhost)[/]" if is_dev_mode() else "[blue]Production[/]"
-    console.print(f"  Mode:     {mode}")
-    console.print(f"  API Base: {get_api_base()}")
-    console.print()
-
-    if is_authenticated():
-        user = get_current_user()
-        email = user.get("email", "unknown") if user else "unknown"
-        console.print(f"  Auth:     [green]✓ Authenticated as {email}[/]")
-    else:
-        console.print(f"  Auth:     [yellow]○ Not authenticated[/]")
-
-    console.print()
-
-    # LLM Configuration
-    llm_config = get_llm_config()
-    console.print("[bold]LLM Configuration:[/]")
-    extraction_model_display = llm_config['extraction_model'] or f"[dim]{DEFAULT_EXTRACTION_MODEL}[/]"
-    synthesis_model_display = llm_config['synthesis_model'] or f"[dim]{DEFAULT_SYNTHESIS_MODEL}[/]"
-    console.print(f"  Extraction Model: {extraction_model_display}")
-    console.print(f"  Synthesis Model:  {synthesis_model_display}")
-    console.print(f"  Local API URL: {llm_config['local_api_url'] or '[dim]not set[/]'}")
-    console.print(f"  Local API Key: {'[green]✓ set[/]' if llm_config['local_api_key'] else '[dim]not set[/]'}")
-    console.print()
-
-    # Cloud LLM Access (authenticated via backend)
-    _, litellm_key = get_litellm_config()
-    console.print("[bold]Cloud LLM Access:[/]")
-    console.print(f"  Status:  {'[green]✓ authenticated[/]' if litellm_key else '[dim]not authenticated - run repr login[/]'}")
-    console.print()
-
-    console.print(f"  Config:   {CONFIG_DIR / 'config.json'}")
-    console.print(f"  Profiles: {PROFILES_DIR}")
-    console.print()
-
-    console.print("[bold]Environment Variables:[/]")
-    console.print("  REPR_DEV=1         Enable dev mode (localhost)")
-    console.print("  REPR_API_BASE=URL  Override API base URL")
-
-
-@app.command()
-def sync(
-    repo: Optional[str] = typer.Option(
-        None,
-        "--repo",
-        help="Sync specific repository by path",
-    ),
-    all_repos: bool = typer.Option(
-        False,
-        "--all",
-        help="Force sync all tracked repos (ignore last sync)",
-    ),
-    background: bool = typer.Option(
-        False,
-        "--background",
-        help="Run silently in background (no output)",
-    ),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output progress as JSON",
-    ),
-):
-    """
-    Sync tracked repositories to repr.dev.
-    
-    Analyzes repos with new commits since last sync and pushes updates.
-    
-    Examples:
-        repr sync                           # Sync all repos with changes
-        repr sync --repo ~/code/myproject   # Sync specific repo
-        repr sync --all                     # Force sync all repos
-        repr sync --background              # Silent mode (for hooks)
-    """
-    if not is_authenticated():
-        if not background:
-            print_error("Not logged in. Please run 'repr login' first.")
-        raise typer.Exit(1)
-    
-    # Get repos to sync
-    tracked = get_tracked_repos()
-    
-    if not tracked:
-        if not background:
-            print_info("No repositories are being tracked.")
-            print_info("Add a repository with: repr repos add <path>")
-        raise typer.Exit(0)
-    
-    # Filter by --repo option
-    if repo:
-        repo_path = Path(repo).expanduser().resolve()
-        tracked = [r for r in tracked if Path(r["path"]) == repo_path]
-        
-        if not tracked:
-            if not background:
-                print_error(f"Repository not tracked: {repo}")
-            raise typer.Exit(1)
-    
-    if not background:
-        print_header()
-        console.print(f"Syncing {len(tracked)} repository(ies)...")
-        console.print()
-    
-    synced_count = 0
-    skipped_count = 0
-    failed_count = 0
-    
-    results = []
-    
-    for repo_info in tracked:
-        repo_path = Path(repo_info["path"])
-        
-        if not repo_path.exists():
-            if not background:
-                console.print(f"  [{repo_path.name}] [yellow]Skipped (not found)[/]")
-            skipped_count += 1
-            results.append({"repo": repo_path.name, "status": "skipped", "reason": "not_found"})
-            continue
-        
-        # Check if repo has changes since last sync
-        if not all_repos and repo_info.get("last_sync"):
-            # TODO: Check git for new commits since last_sync
-            # For now, just sync everything
-            pass
-        
-        # Run analysis on this repo
-        try:
-            repo_obj = RepoInfo(
-                path=repo_path,
-                name=repo_path.name,
-                commit_count=0,
-                user_commit_count=0,
-                first_commit_date=None,
-                last_commit_date=None,
-                primary_language=None,
-                languages=None,
-                contributors=0,
-                is_fork=False,
-                remote_url=None,
-                description=None,
-                frameworks=None,
-                has_tests=False,
-                has_ci=False,
-            )
-            
-            from .discovery import analyze_repo as analyze_repo_discovery
-            repo_obj = analyze_repo_discovery(repo_path)
-            
-            from .extractor import detect_languages
-            languages = detect_languages(repo_path)
-            repo_obj.languages = {lang: int(pct) for lang, pct in languages.items()}
-            repo_obj.primary_language = max(languages, key=languages.get) if languages else None
-            
-            if not background:
-                console.print(f"  [{repo_obj.name}] Analyzing...")
-            
-            # Get last sync time for incremental analysis
-            last_sync = repo_info.get("last_sync")
-            since_arg = last_sync if last_sync else None
-            
-            # Generate profile
-            _, litellm_key = get_litellm_config()
-            if not litellm_key:
-                if not background:
-                    print_error(f"  [{repo_obj.name}] Not authenticated for LLM access")
-                failed_count += 1
-                results.append({"repo": repo_obj.name, "status": "failed", "reason": "no_llm_auth"})
-                continue
-            
-            llm_config = get_llm_config()
-            
-            profile_content = asyncio.run(_run_single_repo_analysis(
-                repo_obj,
-                api_key=None,
-                base_url=None,
-                extraction_model=llm_config["extraction_model"],
-                synthesis_model=llm_config["synthesis_model"],
-                verbose=False,
-                since=since_arg,
-            ))
-            
-            if not profile_content:
-                if not background:
-                    console.print(f"  [{repo_obj.name}] [red]Failed to generate profile[/]")
-                failed_count += 1
-                results.append({"repo": repo_obj.name, "status": "failed", "reason": "analysis_failed"})
-                continue
-            
-            # Save locally
-            repo_metadata = {
-                "remote_url": repo_obj.remote_url,
-                "commit_count": repo_obj.commit_count,
-                "user_commit_count": repo_obj.user_commit_count,
-                "primary_language": repo_obj.primary_language,
-                "languages": repo_obj.languages,
-                "contributors": repo_obj.contributors,
-                "first_commit_date": repo_obj.first_commit_date.isoformat() if repo_obj.first_commit_date else None,
-                "last_commit_date": repo_obj.last_commit_date.isoformat() if repo_obj.last_commit_date else None,
-                "is_fork": repo_obj.is_fork,
-                "description": repo_obj.description,
-                "frameworks": repo_obj.frameworks,
-                "has_tests": repo_obj.has_tests,
-                "has_ci": repo_obj.has_ci,
-            }
-            
-            profile_path = save_repo_profile(profile_content, repo_obj.name, repo_metadata)
-            
-            # Push to backend
-            result = asyncio.run(push_repo_profile(profile_content, repo_obj.name, repo_metadata))
-            
-            # Update last sync time
-            update_repo_sync(str(repo_path))
-            
-            if not background:
-                console.print(f"  [{repo_obj.name}] [green]✓ Synced[/]")
-            
-            synced_count += 1
-            results.append({"repo": repo_obj.name, "status": "success"})
-            
-        except Exception as e:
-            if not background:
-                console.print(f"  [{repo_path.name}] [red]Failed: {str(e)}[/]")
-            failed_count += 1
-            results.append({"repo": repo_path.name, "status": "failed", "reason": str(e)})
     
     if json_output:
-        output = {
-            "synced": synced_count,
-            "skipped": skipped_count,
-            "failed": failed_count,
-            "results": results,
-        }
-        print(json.dumps(output, indent=2))
+        print(json.dumps(user, indent=2))
         return
     
-    if not background:
-        console.print()
-        if synced_count > 0:
-            print_success(f"Synced {synced_count} repository(ies)")
-        if skipped_count > 0:
-            console.print(f"  Skipped: {skipped_count}")
-        if failed_count > 0:
-            console.print(f"  Failed: {failed_count}")
+    email = user.get("email", "unknown")
+    console.print(f"Signed in as: [bold]{email}[/]")
 
 
-@app.command()
-def hook(
-    action: str = typer.Argument(
-        ...,
-        help="Action: install, remove, status",
-    ),
-    repo: Optional[str] = typer.Option(
-        None,
-        "--repo",
-        help="Repository path (for install/remove)",
-    ),
-    all_repos: bool = typer.Option(
-        False,
-        "--all",
-        help="Apply to all tracked repositories",
-    ),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON",
-    ),
-):
-    """
-    Manage git post-commit hooks for automatic syncing.
-    
-    Commands:
-        install   Install post-commit hook
-        remove    Remove post-commit hook
-        status    Show hook status for tracked repos
-    
-    Examples:
-        repr hook install --all              # Install hooks in all tracked repos
-        repr hook install --repo ~/code/myproject
-        repr hook remove --repo ~/code/myproject
-        repr hook status --json
-    """
-    
-    if action == "install":
-        repos_to_install = []
-        
-        if all_repos:
-            tracked = get_tracked_repos()
-            repos_to_install = [Path(r["path"]) for r in tracked if Path(r["path"]).exists()]
-        elif repo:
-            repos_to_install = [Path(repo).expanduser().resolve()]
-        else:
-            print_error("Specify --repo <path> or --all")
-            raise typer.Exit(1)
-        
-        if not repos_to_install:
-            print_info("No repositories to install hooks in")
-            raise typer.Exit(0)
-        
-        installed_count = 0
-        failed_count = 0
-        
-        for repo_path in repos_to_install:
-            result = hooks.install_hook(repo_path)
-            
-            if result["success"]:
-                # Update config
-                set_repo_hook_status(str(repo_path), True)
-                
-                if not result.get("already_installed"):
-                    console.print(f"  [{repo_path.name}] [green]✓ Installed[/]")
-                    installed_count += 1
-                else:
-                    console.print(f"  [{repo_path.name}] Already installed")
-            else:
-                console.print(f"  [{repo_path.name}] [red]✗ {result['message']}[/]")
-                failed_count += 1
-        
-        console.print()
-        if installed_count > 0:
-            print_success(f"Installed hooks in {installed_count} repository(ies)")
-        if failed_count > 0:
-            console.print(f"  Failed: {failed_count}")
-    
-    elif action == "remove":
-        repos_to_remove = []
-        
-        if all_repos:
-            tracked = get_tracked_repos()
-            repos_to_remove = [Path(r["path"]) for r in tracked if Path(r["path"]).exists()]
-        elif repo:
-            repos_to_remove = [Path(repo).expanduser().resolve()]
-        else:
-            print_error("Specify --repo <path> or --all")
-            raise typer.Exit(1)
-        
-        if not repos_to_remove:
-            print_info("No repositories to remove hooks from")
-            raise typer.Exit(0)
-        
-        removed_count = 0
-        
-        for repo_path in repos_to_remove:
-            result = hooks.remove_hook(repo_path)
-            
-            if result["success"]:
-                # Update config
-                set_repo_hook_status(str(repo_path), False)
-                console.print(f"  [{repo_path.name}] [green]✓ {result['message']}[/]")
-                removed_count += 1
-            else:
-                console.print(f"  [{repo_path.name}] [yellow]{result['message']}[/]")
-        
-        console.print()
-        print_success(f"Processed {removed_count} repository(ies)")
-    
-    elif action == "status":
-        tracked = get_tracked_repos()
-        
-        if not tracked:
-            if not json_output:
-                print_info("No repositories are being tracked")
-            raise typer.Exit(0)
-        
-        statuses = []
-        
-        for repo_info in tracked:
-            repo_path = Path(repo_info["path"])
-            
-            if not repo_path.exists():
-                continue
-            
-            status = hooks.get_hook_status(repo_path)
-            status["name"] = repo_path.name
-            status["path"] = str(repo_path)
-            statuses.append(status)
-        
-        if json_output:
-            print(json.dumps(statuses, indent=2))
-            return
-        
-        print_panel("Hook Status", "", border_color=BRAND_PRIMARY)
-        console.print()
-        
-        for status in statuses:
-            name = status["name"]
-            installed = status["installed"]
-            
-            if installed:
-                console.print(f"  [{BRAND_SUCCESS}]✓[/] {name}")
-                console.print(f"    Hook installed and active")
-            else:
-                console.print(f"  [{BRAND_MUTED}]○[/] {name}")
-                console.print(f"    No hook installed")
-            console.print()
-    
-    else:
-        print_error(f"Unknown action: {action}")
-        print_info("Valid actions: install, remove, status")
-        raise typer.Exit(1)
-
+# =============================================================================
+# REPOSITORY MANAGEMENT
+# =============================================================================
 
 @app.command()
 def repos(
-    action: str = typer.Argument(
-        ...,
-        help="Action: list, add, remove, scan",
-    ),
-    path: Optional[Path] = typer.Argument(
-        None,
-        help="Repository path (for add/remove actions)",
-        exists=True,
-        dir_okay=True,
-        resolve_path=True,
-    ),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output as JSON (for machine consumption).",
-    ),
+    action: str = typer.Argument("list", help="Action: list, add, remove, pause, resume"),
+    path: Optional[Path] = typer.Argument(None, help="Repository path (for add/remove/pause/resume)"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """
     Manage tracked repositories.
     
-    Commands:
-        list    List all tracked repositories
-        add     Add a repository or directory to track
-        remove  Stop tracking a repository
-        scan    Auto-discover repos under configured paths
-    
     Examples:
-        repr repos list
+        repr repos
         repr repos add ~/code/myproject
-        repr repos remove ~/code/myproject
-        repr repos scan --json
+        repr repos remove ~/code/old-project
+        repr repos pause ~/code/work-project
     """
-    
     if action == "list":
         tracked = get_tracked_repos()
         
         if json_output:
-            output = []
-            for repo in tracked:
-                repo_path = Path(repo["path"])
-                output.append({
-                    "path": repo["path"],
-                    "name": repo_path.name,
-                    "last_sync": repo.get("last_sync"),
-                    "hook_installed": repo.get("hook_installed", False),
-                    "exists": repo_path.exists(),
-                })
-            print(json.dumps(output, indent=2))
+            print(json.dumps(tracked, indent=2))
             return
         
         if not tracked:
-            print_info("No repositories are being tracked.")
-            print_info("Add a repository with: repr repos add <path>")
+            print_info("No repositories tracked.")
+            print_info("Run `repr repos add <path>` to track a repository.")
             raise typer.Exit()
         
-        print_panel("Tracked Repositories", "", border_color=BRAND_PRIMARY)
+        console.print(f"[bold]Tracked Repositories[/] ({len(tracked)})")
         console.print()
         
         for repo in tracked:
             repo_path = Path(repo["path"])
-            name = repo_path.name
-            exists = "✓" if repo_path.exists() else "✗ (not found)"
-            hook = "✓ hook" if repo.get("hook_installed") else "○ no hook"
-            last_sync = repo.get("last_sync")
+            exists = repo_path.exists()
+            paused = repo.get("paused", False)
+            hook = repo.get("hook_installed", False)
             
-            if last_sync:
-                try:
-                    dt = datetime.fromisoformat(last_sync)
-                    sync_str = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    sync_str = "unknown"
+            if not exists:
+                status = f"[{BRAND_ERROR}]✗[/]"
+            elif paused:
+                status = f"[{BRAND_WARNING}]○[/]"
             else:
-                sync_str = "never"
+                status = f"[{BRAND_SUCCESS}]✓[/]"
             
-            console.print(f"  [{BRAND_PRIMARY}]{name}[/]")
-            console.print(f"    Path: {repo['path']}")
-            console.print(f"    Status: {exists} | {hook} | Last sync: {sync_str}")
-            console.print()
+            console.print(f"  {status} {repo_path.name}")
+            details = []
+            if hook:
+                details.append("hook: on")
+            if paused:
+                details.append("paused")
+            if not exists:
+                details.append("missing")
+            
+            info_str = " • ".join(details) if details else repo["path"]
+            console.print(f"    [{BRAND_MUTED}]{info_str}[/]")
     
     elif action == "add":
-        if path is None:
-            print_error("Path required for 'add' action")
-            print_info("Usage: repr repos add <path>")
+        if not path:
+            print_error("Path required: repr repos add <path>")
             raise typer.Exit(1)
         
-        if not path.is_dir():
-            print_error(f"Not a directory: {path}")
+        if not (path / ".git").exists():
+            print_error(f"Not a git repository: {path}")
             raise typer.Exit(1)
         
-        # Check if it's a git repo or contains git repos
-        from .discovery import is_git_repo, discover_repos
-        
-        if (path / ".git").is_dir():
-            # Single repo
-            add_tracked_repo(str(path))
-            print_success(f"Added repository: {path.name}")
-            print_info(f"Path: {path}")
-        else:
-            # Scan for repos in directory
-            console.print(f"Scanning {path} for repositories...")
-            repos = discover_repos([path], min_commits=1)
-            
-            if not repos:
-                print_warning(f"No git repositories found in {path}")
-                raise typer.Exit(1)
-            
-            console.print(f"Found {len(repos)} repositories")
-            console.print()
-            
-            for repo in repos:
-                add_tracked_repo(str(repo.path))
-                console.print(f"  ✓ Added: {repo.name}")
-            
-            console.print()
-            print_success(f"Added {len(repos)} repositories")
+        add_tracked_repo(str(path))
+        print_success(f"Added: {path.name}")
     
     elif action == "remove":
-        if path is None:
-            print_error("Path required for 'remove' action")
-            print_info("Usage: repr repos remove <path>")
+        if not path:
+            print_error("Path required: repr repos remove <path>")
             raise typer.Exit(1)
         
-        removed = remove_tracked_repo(str(path))
-        
-        if removed:
-            print_success(f"Removed repository: {path.name}")
+        if remove_tracked_repo(str(path)):
+            print_success(f"Removed: {path.name}")
         else:
-            print_warning(f"Repository not tracked: {path.name}")
+            print_warning(f"Not tracked: {path.name}")
     
-    elif action == "scan":
-        # Scan default paths for new repos
-        from .discovery import discover_repos
+    elif action == "pause":
+        if not path:
+            print_error("Path required: repr repos pause <path>")
+            raise typer.Exit(1)
         
-        config = load_config()
-        default_paths = config.get("settings", {}).get("default_paths", ["~/code"])
-        paths_to_scan = [Path(p).expanduser() for p in default_paths]
+        set_repo_paused(str(path), True)
+        print_success(f"Paused auto-tracking for: {path.name}")
+    
+    elif action == "resume":
+        if not path:
+            print_error("Path required: repr repos resume <path>")
+            raise typer.Exit(1)
         
-        console.print("Scanning for repositories...")
-        console.print()
-        
-        all_repos = []
-        for scan_path in paths_to_scan:
-            if not scan_path.exists():
-                continue
-            
-            repos = discover_repos([scan_path], min_commits=1)
-            all_repos.extend(repos)
-        
-        if not all_repos:
-            print_info("No repositories found")
-            raise typer.Exit()
-        
-        # Filter out already tracked
-        tracked_paths = {r["path"] for r in get_tracked_repos()}
-        new_repos = [r for r in all_repos if str(r.path) not in tracked_paths]
-        
-        if json_output:
-            output = {
-                "found": len(all_repos),
-                "new": len(new_repos),
-                "repos": [{"path": str(r.path), "name": r.name} for r in new_repos]
-            }
-            print(json.dumps(output, indent=2))
-            return
-        
-        if not new_repos:
-            print_success(f"Found {len(all_repos)} repositories (all already tracked)")
-            raise typer.Exit()
-        
-        console.print(f"Found {len(new_repos)} new repositories:")
-        console.print()
-        
-        for repo in new_repos:
-            console.print(f"  • {repo.name} ({repo.path})")
-        
-        console.print()
-        
-        if Confirm.ask("Add all to tracked repositories?"):
-            for repo in new_repos:
-                add_tracked_repo(str(repo.path))
-            print_success(f"Added {len(new_repos)} repositories")
-        else:
-            print_info("No repositories added")
+        set_repo_paused(str(path), False)
+        print_success(f"Resumed auto-tracking for: {path.name}")
     
     else:
         print_error(f"Unknown action: {action}")
-        print_info("Valid actions: list, add, remove, scan")
-        raise typer.Exit(1)
+        print_info("Valid actions: list, add, remove, pause, resume")
 
 
-@app.command(name="config-set")
-def config_set(
-    extraction_model: Optional[str] = typer.Option(
-        None,
-        "--extraction-model",
-        help="Model for extracting accomplishments from commits (e.g., gpt-4o-mini, llama3.2).",
-    ),
-    synthesis_model: Optional[str] = typer.Option(
-        None,
-        "--synthesis-model",
-        help="Model for synthesizing the final profile (e.g., gpt-4o, llama3.2).",
-    ),
-    local_api_url: Optional[str] = typer.Option(
-        None,
-        "--local-api-url",
-        help="Local LLM API base URL (e.g., http://localhost:11434/v1).",
-    ),
-    local_api_key: Optional[str] = typer.Option(
-        None,
-        "--local-api-key",
-        help="Local LLM API key (e.g., 'ollama' for Ollama).",
-    ),
-    clear: bool = typer.Option(
-        False,
-        "--clear",
-        help="Clear all LLM configuration.",
-    ),
+# =============================================================================
+# HOOKS MANAGEMENT
+# =============================================================================
+
+@hooks_app.command("install")
+def hooks_install(
+    all_repos: bool = typer.Option(False, "--all", help="Install in all tracked repos"),
+    repo: Optional[Path] = typer.Option(None, "--repo", help="Install in specific repo"),
 ):
     """
-    Configure LLM models and local API settings.
+    Install git post-commit hooks for auto-tracking.
     
-    Settings are saved to ~/.repr/config.json and used as defaults
-    for the analyze command.
-    
-    Examples:
-        # Set models for cloud analysis
-        repr config-set --extraction-model gpt-4o-mini --synthesis-model gpt-4o
-        
-        # Configure local LLM (Ollama)
-        repr config-set --local-api-url http://localhost:11434/v1 --local-api-key ollama
-        repr config-set --extraction-model llama3.2 --synthesis-model llama3.2
-        
-        # Configure local LLM (LM Studio)
-        repr config-set --local-api-url http://localhost:1234/v1 --local-api-key lm-studio
-        
-        # Clear all LLM settings
-        repr config-set --clear
+    Example:
+        repr hooks install --all
+        repr hooks install --repo ~/code/myproject
     """
-    if clear:
-        clear_llm_config()
-        print_success("LLM configuration cleared")
-        return
+    from .hooks import install_hook
     
-    if not any([extraction_model, synthesis_model, local_api_url, local_api_key]):
-        # No options provided, show current config
-        llm_config = get_llm_config()
-        console.print("[bold]Current LLM Configuration:[/]")
-        console.print()
-        console.print(f"  Extraction Model: {llm_config['extraction_model'] or '[dim]default[/]'}")
-        console.print(f"  Synthesis Model:  {llm_config['synthesis_model'] or '[dim]default[/]'}")
-        console.print(f"  Local API URL:    {llm_config['local_api_url'] or '[dim]not set[/]'}")
-        console.print(f"  Local API Key:    {'[green]✓ set[/]' if llm_config['local_api_key'] else '[dim]not set[/]'}")
-        console.print()
-        console.print("Use [bold]repr config-set --help[/] to see available options.")
-        return
+    if repo:
+        repos_to_install = [{"path": str(repo)}]
+    elif all_repos:
+        repos_to_install = get_tracked_repos()
+    else:
+        print_error("Specify --all or --repo <path>")
+        raise typer.Exit(1)
     
-    # Update configuration
-    set_llm_config(
-        extraction_model=extraction_model,
-        synthesis_model=synthesis_model,
-        local_api_url=local_api_url,
-        local_api_key=local_api_key,
-    )
+    if not repos_to_install:
+        print_warning("No repositories to install hooks in")
+        raise typer.Exit(1)
     
-    print_success("LLM configuration updated")
+    console.print(f"Installing hooks in {len(repos_to_install)} repositories...")
     console.print()
     
-    # Show what was set
-    if extraction_model:
-        console.print(f"  Extraction Model: {extraction_model}")
-    if synthesis_model:
-        console.print(f"  Synthesis Model:  {synthesis_model}")
-    if local_api_url:
-        console.print(f"  Local API URL: {local_api_url}")
-    if local_api_key:
-        console.print(f"  Local API Key: [green]✓ set[/]")
+    installed = 0
+    already = 0
+    
+    for repo_info in repos_to_install:
+        repo_path = Path(repo_info["path"])
+        result = install_hook(repo_path)
+        
+        if result["success"]:
+            if result["already_installed"]:
+                console.print(f"  [{BRAND_MUTED}]○[/] {repo_path.name}: already installed")
+                already += 1
+            else:
+                console.print(f"  [{BRAND_SUCCESS}]✓[/] {repo_path.name}: hook installed")
+                set_repo_hook_status(str(repo_path), True)
+                installed += 1
+        else:
+            console.print(f"  [{BRAND_ERROR}]✗[/] {repo_path.name}: {result['message']}")
+    
+    console.print()
+    print_success(f"Hooks installed: {installed}, Already installed: {already}")
+    console.print()
+    console.print(f"[{BRAND_MUTED}]Hooks queue commits locally. Run `repr generate` to create stories.[/]")
+
+
+@hooks_app.command("remove")
+def hooks_remove(
+    all_repos: bool = typer.Option(False, "--all", help="Remove from all tracked repos"),
+    repo: Optional[Path] = typer.Option(None, "--repo", help="Remove from specific repo"),
+):
+    """
+    Remove git post-commit hooks.
+    
+    Example:
+        repr hooks remove --all
+    """
+    from .hooks import remove_hook
+    
+    if repo:
+        repos_to_remove = [{"path": str(repo)}]
+    elif all_repos:
+        repos_to_remove = get_tracked_repos()
+    else:
+        print_error("Specify --all or --repo <path>")
+        raise typer.Exit(1)
+    
+    removed = 0
+    for repo_info in repos_to_remove:
+        repo_path = Path(repo_info["path"])
+        result = remove_hook(repo_path)
+        
+        if result["success"]:
+            console.print(f"  [{BRAND_SUCCESS}]✓[/] {repo_path.name}: {result['message']}")
+            set_repo_hook_status(str(repo_path), False)
+            removed += 1
+        else:
+            console.print(f"  [{BRAND_MUTED}]○[/] {repo_path.name}: {result['message']}")
+    
+    print_success(f"Hooks removed: {removed}")
+
+
+@hooks_app.command("status")
+def hooks_status(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show hook status for all tracked repos.
+    
+    Example:
+        repr hooks status
+    """
+    from .hooks import get_hook_status, get_queue_stats
+    
+    tracked = get_tracked_repos()
+    
+    if not tracked:
+        print_warning("No repositories tracked")
+        raise typer.Exit()
+    
+    results = []
+    for repo_info in tracked:
+        repo_path = Path(repo_info["path"])
+        if not repo_path.exists():
+            continue
+        
+        status = get_hook_status(repo_path)
+        queue = get_queue_stats(repo_path)
+        
+        results.append({
+            "name": repo_path.name,
+            "path": str(repo_path),
+            "installed": status["installed"],
+            "executable": status["executable"],
+            "queue_count": queue["count"],
+        })
+    
+    if json_output:
+        print(json.dumps(results, indent=2))
+        return
+    
+    console.print("[bold]Hook Status[/]")
+    console.print()
+    
+    for r in results:
+        if r["installed"]:
+            status = f"[{BRAND_SUCCESS}]✓[/]"
+            msg = "Hook installed and active"
+        else:
+            status = f"[{BRAND_MUTED}]○[/]"
+            msg = "No hook installed"
+        
+        console.print(f"{status} {r['name']}")
+        console.print(f"  [{BRAND_MUTED}]{msg}[/]")
+        if r["queue_count"] > 0:
+            console.print(f"  [{BRAND_MUTED}]Queue: {r['queue_count']} commits[/]")
+        console.print()
+
+
+@hooks_app.command("queue")
+def hooks_queue(
+    commit_sha: str = typer.Argument(..., help="Commit SHA to queue"),
+    repo: Path = typer.Option(..., "--repo", help="Repository path"),
+):
+    """
+    Queue a commit (called by git hook).
+    
+    This is an internal command used by the git post-commit hook.
+    """
+    from .hooks import queue_commit
+    
+    success = queue_commit(repo, commit_sha)
+    if not success:
+        # Silent failure - don't block git commit
+        pass
+
+
+# =============================================================================
+# LLM CONFIGURATION
+# =============================================================================
+
+@llm_app.command("add")
+def llm_add(
+    provider: str = typer.Argument(..., help="Provider: openai, anthropic, groq, together"),
+):
+    """
+    Configure a BYOK provider.
+    
+    Example:
+        repr llm add openai
+    """
+    if provider not in BYOK_PROVIDERS:
+        print_error(f"Unknown provider: {provider}")
+        print_info(f"Available: {', '.join(BYOK_PROVIDERS.keys())}")
+        raise typer.Exit(1)
+    
+    provider_info = BYOK_PROVIDERS[provider]
+    console.print(f"Configure {provider_info['name']}")
+    console.print()
+    
+    api_key = Prompt.ask("API Key", password=True)
+    if not api_key:
+        print_error("API key required")
+        raise typer.Exit(1)
+    
+    # Test the key
+    console.print("Testing connection...")
+    from .llm import test_byok_provider
+    result = test_byok_provider(provider, api_key)
+    
+    if result.success:
+        add_byok_provider(provider, api_key)
+        print_success(f"Added {provider_info['name']}")
+        console.print(f"  Response time: {result.response_time_ms:.0f}ms")
+    else:
+        print_error(f"Connection failed: {result.error}")
+        if confirm("Save anyway?"):
+            add_byok_provider(provider, api_key)
+            print_success(f"Added {provider_info['name']}")
+
+
+@llm_app.command("remove")
+def llm_remove(
+    provider: str = typer.Argument(..., help="Provider to remove"),
+):
+    """
+    Remove a BYOK provider key.
+    
+    Example:
+        repr llm remove openai
+    """
+    if remove_byok_provider(provider):
+        print_success(f"Removed {provider}")
+    else:
+        print_warning(f"Provider not configured: {provider}")
+
+
+@llm_app.command("use")
+def llm_use(
+    mode: str = typer.Argument(..., help="Mode: local, cloud, byok:<provider>"),
+):
+    """
+    Set default LLM mode.
+    
+    Examples:
+        repr llm use local
+        repr llm use cloud
+        repr llm use byok:openai
+    """
+    valid_modes = ["local", "cloud"]
+    byok_providers = list_byok_providers()
+    valid_modes.extend([f"byok:{p}" for p in byok_providers])
+    
+    if mode not in valid_modes and not mode.startswith("byok:"):
+        print_error(f"Invalid mode: {mode}")
+        print_info(f"Valid modes: {', '.join(valid_modes)}")
+        raise typer.Exit(1)
+    
+    if mode == "cloud" and not is_authenticated():
+        print_warning("Cloud mode requires sign-in")
+        print_info("When not signed in, local mode will be used instead")
+    
+    if mode.startswith("byok:"):
+        provider = mode.split(":", 1)[1]
+        if provider not in byok_providers:
+            print_error(f"BYOK provider not configured: {provider}")
+            print_info(f"Run `repr llm add {provider}` first")
+            raise typer.Exit(1)
+    
+    set_llm_config(default=mode)
+    print_success(f"Default LLM mode: {mode}")
+
+
+@llm_app.command("configure")
+def llm_configure():
+    """
+    Configure local LLM endpoint interactively.
+    
+    Example:
+        repr llm configure
+    """
+    from .llm import detect_all_local_llms, list_ollama_models
+    
+    console.print("[bold]Configure Local LLM[/]")
+    console.print()
+    
+    # Detect available LLMs
+    detected = detect_all_local_llms()
+    
+    if detected:
+        console.print("Detected local LLMs:")
+        for i, llm in enumerate(detected, 1):
+            console.print(f"  {i}. {llm.name} ({llm.url})")
+        console.print(f"  {len(detected) + 1}. Custom endpoint")
+        console.print()
+        
+        choice = Prompt.ask(
+            "Select",
+            choices=[str(i) for i in range(1, len(detected) + 2)],
+            default="1",
+        )
+        
+        if int(choice) <= len(detected):
+            selected = detected[int(choice) - 1]
+            url = selected.url
+            models = selected.models
+        else:
+            url = Prompt.ask("Custom endpoint URL")
+            models = []
+    else:
+        console.print(f"[{BRAND_MUTED}]No local LLMs detected[/]")
+        url = Prompt.ask("Endpoint URL", default="http://localhost:11434")
+        models = []
+    
+    # Select model
+    if models:
+        console.print()
+        console.print("Available models:")
+        for i, model in enumerate(models[:10], 1):
+            console.print(f"  {i}. {model}")
+        console.print()
+        
+        model_choice = Prompt.ask("Select model", default="1")
+        try:
+            model = models[int(model_choice) - 1]
+        except (ValueError, IndexError):
+            model = model_choice  # Use as literal model name
+    else:
+        model = Prompt.ask("Model name", default="llama3.2")
+    
+    # Save config
+    set_llm_config(
+        local_api_url=f"{url}/v1",
+        local_model=model,
+    )
+    
+    print_success(f"Configured local LLM")
+    console.print(f"  Endpoint: {url}")
+    console.print(f"  Model: {model}")
+
+
+@llm_app.command("test")
+def llm_test():
+    """
+    Test LLM connection and generation.
+    
+    Example:
+        repr llm test
+    """
+    from .llm import test_local_llm, get_llm_status
+    
+    console.print("Testing LLM connection...")
+    console.print()
+    
+    status = get_llm_status()
+    
+    # Test local
+    console.print("[bold]Local LLM:[/]")
+    if status["local"]["available"]:
+        result = test_local_llm(
+            url=status["local"]["url"],
+            model=status["local"]["model"],
+        )
+        
+        if result.success:
+            console.print(f"  [{BRAND_SUCCESS}]✓[/] Connection successful")
+            console.print(f"  Provider: {result.provider}")
+            console.print(f"  Model: {result.model}")
+            console.print(f"  Response time: {result.response_time_ms:.0f}ms")
+        else:
+            console.print(f"  [{BRAND_ERROR}]✗[/] {result.error}")
+    else:
+        console.print(f"  [{BRAND_MUTED}]Not detected[/]")
+    
+    console.print()
+    
+    # Show cloud status
+    console.print("[bold]Cloud LLM:[/]")
+    if status["cloud"]["available"]:
+        console.print(f"  [{BRAND_SUCCESS}]✓[/] Available")
+        console.print(f"  Model: {status['cloud']['model']}")
+    else:
+        console.print(f"  [{BRAND_MUTED}]✗[/] {status['cloud']['blocked_reason']}")
+    
+    # Show BYOK status
+    if status["byok"]["providers"]:
+        console.print()
+        console.print("[bold]BYOK Providers:[/]")
+        for provider in status["byok"]["providers"]:
+            console.print(f"  [{BRAND_SUCCESS}]✓[/] {provider}")
+
+
+# =============================================================================
+# PRIVACY
+# =============================================================================
+
+@privacy_app.command("explain")
+def privacy_explain():
+    """
+    One-screen summary of privacy guarantees.
+    
+    Example:
+        repr privacy explain
+    """
+    from .privacy import get_privacy_explanation
+    
+    explanation = get_privacy_explanation()
+    
+    console.print("[bold]repr Privacy Guarantees[/]")
+    console.print("━" * 50)
+    console.print()
+    
+    console.print("[bold]ARCHITECTURE:[/]")
+    console.print(f"  ✓ {explanation['architecture']['guarantee']}")
+    console.print("  ✓ No background daemons or silent uploads")
+    console.print("  ✓ All network calls are foreground, user-initiated")
+    console.print("  ✓ No telemetry by default (opt-in only)")
+    console.print()
+    
+    console.print("[bold]CURRENT SETTINGS:[/]")
+    state = explanation["current_state"]
+    console.print(f"  Auth: {'signed in' if state['authenticated'] else 'not signed in'}")
+    console.print(f"  Mode: {state['mode']}")
+    console.print(f"  Privacy lock: {'enabled' if state['privacy_lock'] else 'disabled'}")
+    console.print(f"  Telemetry: {'enabled' if state['telemetry_enabled'] else 'disabled'}")
+    console.print()
+    
+    console.print("[bold]LOCAL MODE NETWORK POLICY:[/]")
+    console.print("  Allowed: 127.0.0.1, localhost, ::1 (loopback only)")
+    console.print("  Blocked: All external network, DNS, HTTP(S) to internet")
+    console.print()
+    
+    console.print("[bold]CLOUD MODE SETTINGS:[/]")
+    cloud = explanation["cloud_mode_settings"]
+    console.print(f"  Path redaction: {'enabled' if cloud['path_redaction_enabled'] else 'disabled'}")
+    console.print(f"  Diffs: {'disabled' if cloud['diffs_disabled'] else 'enabled'}")
+    console.print(f"  Email redaction: {'enabled' if cloud['email_redaction_enabled'] else 'disabled'}")
+    console.print()
+    
+    console.print(f"[{BRAND_MUTED}]Run `repr privacy audit` to see all data sent[/]")
+    console.print(f"[{BRAND_MUTED}]Run `repr privacy lock-local` to disable cloud permanently[/]")
+
+
+@privacy_app.command("audit")
+def privacy_audit(
+    days: int = typer.Option(30, "--days", help="Number of days to show"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show what data was sent to cloud.
+    
+    Example:
+        repr privacy audit
+    """
+    from .privacy import get_audit_summary, get_data_sent_history
+    
+    summary = get_audit_summary(days=days)
+    
+    if json_output:
+        print(json.dumps(summary, indent=2, default=str))
+        return
+    
+    console.print("[bold]Privacy Audit[/]")
+    console.print()
+    console.print(f"Last {days} days:")
+    console.print()
+    
+    if summary["total_operations"] == 0:
+        if is_authenticated():
+            console.print(f"  [{BRAND_MUTED}]No data sent to cloud[/]")
+        else:
+            console.print(f"  [{BRAND_MUTED}]None (not signed in)[/]")
+        console.print()
+        console.print("No data has been sent to repr.dev.")
+        return
+    
+    for op_name, op_data in summary["by_operation"].items():
+        console.print(f"[bold]{op_name}[/] ({op_data['count']} times):")
+        for entry in op_data["recent"]:
+            payload = entry.get("payload_summary", {})
+            console.print(f"  • {entry.get('timestamp', '')[:10]}: {payload}")
+        console.print()
+    
+    console.print(f"Total data sent: ~{format_bytes(summary['total_bytes_sent'])}")
+    console.print(f"Destinations: {', '.join(summary['destinations'])}")
+
+
+@privacy_app.command("lock-local")
+def privacy_lock_local(
+    permanent: bool = typer.Option(False, "--permanent", help="Make lock irreversible"),
+):
+    """
+    Disable cloud features (even after login).
+    
+    Example:
+        repr privacy lock-local
+        repr privacy lock-local --permanent
+    """
+    if permanent:
+        console.print(f"[{BRAND_WARNING}]⚠ This will PERMANENTLY disable cloud features.[/]")
+        console.print("  You will not be able to unlock cloud mode.")
+        console.print("  Local-only mode will be enforced forever.")
+        console.print()
+        
+        if not confirm("Continue?"):
+            print_info("Cancelled")
+            raise typer.Exit()
+    
+    lock_local_only(permanent=permanent)
+    
+    if permanent:
+        print_success("Local-only mode PERMANENTLY enabled")
+    else:
+        print_success("Local-only mode enabled")
+        console.print(f"  [{BRAND_MUTED}]To unlock: repr privacy unlock-local[/]")
+
+
+@privacy_app.command("unlock-local")
+def privacy_unlock_local():
+    """
+    Unlock from local-only mode.
+    
+    Example:
+        repr privacy unlock-local
+    """
+    if unlock_local_only():
+        print_success("Local-only mode disabled")
+        print_info("Cloud features are now available")
+    else:
+        print_error("Cannot unlock: local-only mode is permanently locked")
+
+
+# =============================================================================
+# CONFIG
+# =============================================================================
+
+@config_app.command("show")
+def config_show(
+    key: Optional[str] = typer.Argument(None, help="Specific key (dot notation)"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Display configuration.
+    
+    Examples:
+        repr config show
+        repr config show llm.default
+    """
+    if key:
+        value = get_config_value(key)
+        if json_output:
+            print(json.dumps(value, indent=2, default=str))
+        else:
+            console.print(f"{key} = {value}")
+    else:
+        config = load_config()
+        # Remove sensitive data
+        if config.get("auth"):
+            config["auth"] = {"signed_in": True, "email": config["auth"].get("email")}
+        
+        if json_output:
+            print(json.dumps(config, indent=2, default=str))
+        else:
+            console.print("[bold]Configuration[/]")
+            console.print()
+            console.print(json.dumps(config, indent=2, default=str))
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Key (dot notation)"),
+    value: str = typer.Argument(..., help="Value"),
+):
+    """
+    Set a configuration value.
+    
+    Examples:
+        repr config set llm.default local
+        repr config set generation.batch_size 10
+    """
+    # Parse value type
+    if value.lower() == "true":
+        parsed_value = True
+    elif value.lower() == "false":
+        parsed_value = False
+    elif value.isdigit():
+        parsed_value = int(value)
+    else:
+        try:
+            parsed_value = float(value)
+        except ValueError:
+            parsed_value = value
+    
+    set_config_value(key, parsed_value)
+    print_success(f"Set {key} = {parsed_value}")
+
+
+@config_app.command("edit")
+def config_edit():
+    """
+    Open config file in $EDITOR.
+    
+    Example:
+        repr config edit
+    """
+    import subprocess
+    
+    editor = os.environ.get("EDITOR", "vim")
+    subprocess.run([editor, str(CONFIG_FILE)])
+    print_success("Config file updated")
+
+
+# =============================================================================
+# DATA
+# =============================================================================
+
+@data_app.callback(invoke_without_command=True)
+def data_default(ctx: typer.Context):
+    """Show local data storage info."""
+    if ctx.invoked_subcommand is None:
+        stats = get_storage_stats()
+        
+        console.print("[bold]Local Data[/]")
+        console.print()
+        console.print(f"Stories: {stats['stories']['count']} files ({format_bytes(stats['stories']['size_bytes'])})")
+        console.print(f"Profiles: {stats['profiles']['count']} files ({format_bytes(stats['profiles']['size_bytes'])})")
+        console.print(f"Cache: {format_bytes(stats['cache']['size_bytes'])}")
+        console.print(f"Config: {format_bytes(stats['config']['size_bytes'])}")
+        console.print()
+        console.print(f"Total: {format_bytes(stats['total_size_bytes'])}")
+        console.print()
+        console.print(f"[{BRAND_MUTED}]Location: {stats['stories']['path']}[/]")
+
+
+@data_app.command("backup")
+def data_backup(
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file"),
+):
+    """
+    Backup all local data to JSON.
+    
+    Example:
+        repr data backup > backup.json
+        repr data backup --output backup.json
+    """
+    backup_data = backup_all_data()
+    json_str = json.dumps(backup_data, indent=2, default=str)
+    
+    if output:
+        output.write_text(json_str)
+        print_success(f"Backup saved to {output}")
+        console.print(f"  Stories: {len(backup_data['stories'])}")
+        console.print(f"  Profiles: {len(backup_data['profiles'])}")
+    else:
+        print(json_str)
+
+
+@data_app.command("restore")
+def data_restore(
+    input_file: Path = typer.Argument(..., help="Backup file to restore"),
+    merge: bool = typer.Option(True, "--merge/--replace", help="Merge with existing data"),
+):
+    """
+    Restore from backup.
+    
+    Example:
+        repr data restore backup.json
+    """
+    if not input_file.exists():
+        print_error(f"File not found: {input_file}")
+        raise typer.Exit(1)
+    
+    try:
+        backup_data = json.loads(input_file.read_text())
+    except json.JSONDecodeError:
+        print_error("Invalid JSON file")
+        raise typer.Exit(1)
+    
+    console.print("This will restore:")
+    console.print(f"  • {len(backup_data.get('stories', []))} stories")
+    console.print(f"  • {len(backup_data.get('profiles', []))} profiles")
+    console.print(f"  • Configuration settings")
+    console.print()
+    console.print(f"Mode: {'merge' if merge else 'replace'}")
+    
+    if not confirm("Continue?"):
+        print_info("Cancelled")
+        raise typer.Exit()
+    
+    result = restore_from_backup(backup_data, merge=merge)
+    
+    print_success("Restore complete")
+    console.print(f"  Stories: {result['stories']}")
+    console.print(f"  Profiles: {result['profiles']}")
+
+
+@data_app.command("clear-cache")
+def data_clear_cache():
+    """
+    Clear local cache.
+    
+    Example:
+        repr data clear-cache
+    """
+    from .config import clear_cache, get_cache_size
+    
+    size = get_cache_size()
+    clear_cache()
+    print_success(f"Cache cleared ({format_bytes(size)} freed)")
+    console.print("  Stories preserved")
+    console.print("  Config preserved")
+
+
+# =============================================================================
+# PROFILE
+# =============================================================================
+
+@profile_app.callback(invoke_without_command=True)
+def profile_default(ctx: typer.Context):
+    """View profile in terminal."""
+    if ctx.invoked_subcommand is None:
+        profile_config = get_profile_config()
+        story_list = list_stories(limit=5)
+        
+        console.print("[bold]Profile[/]")
+        console.print()
+        
+        username = profile_config.get("username") or "Not set"
+        console.print(f"Username: {username}")
+        
+        if profile_config.get("bio"):
+            console.print(f"Bio: {profile_config['bio']}")
+        if profile_config.get("location"):
+            console.print(f"Location: {profile_config['location']}")
+        
+        console.print()
+        console.print(f"[bold]Recent Stories ({len(story_list)}):[/]")
+        for s in story_list:
+            console.print(f"  • {s.get('summary', 'Untitled')[:60]}")
+        
+        if is_authenticated():
+            console.print()
+            # TODO: Get profile URL from API
+            console.print(f"[{BRAND_MUTED}]Profile URL: https://repr.dev/@{username}[/]")
+
+
+@profile_app.command("update")
+def profile_update(
+    preview: bool = typer.Option(False, "--preview", help="Show changes before publishing"),
+    local_only: bool = typer.Option(False, "--local", help="Update locally only"),
+):
+    """
+    Generate/update profile from stories.
+    
+    Example:
+        repr profile update --preview
+    """
+    story_list = list_stories()
+    
+    if not story_list:
+        print_warning("No stories to build profile from")
+        print_info("Run `repr generate` first")
+        raise typer.Exit(1)
+    
+    console.print(f"Building profile from {len(story_list)} stories...")
+    
+    # TODO: Implement actual profile generation
+    print_info("Profile generation not yet fully implemented")
+    print_info("Stories are available for manual profile creation")
+
+
+@profile_app.command("set-bio")
+def profile_set_bio(
+    bio: str = typer.Argument(..., help="Bio text"),
+):
+    """Set profile bio."""
+    set_profile_config(bio=bio)
+    print_success("Bio updated")
+
+
+@profile_app.command("set-location")
+def profile_set_location(
+    location: str = typer.Argument(..., help="Location"),
+):
+    """Set profile location."""
+    set_profile_config(location=location)
+    print_success("Location updated")
+
+
+@profile_app.command("set-available")
+def profile_set_available(
+    available: bool = typer.Argument(..., help="Available for work (true/false)"),
+):
+    """Set availability status."""
+    set_profile_config(available=available)
+    print_success(f"Availability: {'available' if available else 'not available'}")
+
+
+@profile_app.command("export")
+def profile_export(
+    format: str = typer.Option("md", "--format", "-f", help="Format: md, html, json"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file"),
+):
+    """
+    Export profile to different formats.
+    
+    Example:
+        repr profile export --format md > profile.md
+    """
+    story_list = list_stories()
+    profile_config = get_profile_config()
+    
+    if format == "json":
+        data = {
+            "profile": profile_config,
+            "stories": story_list,
+        }
+        content = json.dumps(data, indent=2, default=str)
+    elif format == "md":
+        # Generate markdown
+        lines = [f"# {profile_config.get('username', 'Developer Profile')}", ""]
+        if profile_config.get("bio"):
+            lines.extend([profile_config["bio"], ""])
+        lines.extend(["## Stories", ""])
+        for s in story_list:
+            lines.append(f"### {s.get('summary', 'Untitled')}")
+            lines.append(f"*{s.get('repo_name', 'unknown')} • {s.get('created_at', '')[:10]}*")
+            lines.append("")
+        content = "\n".join(lines)
+    else:
+        print_error(f"Unsupported format: {format}")
+        raise typer.Exit(1)
+    
+    if output:
+        output.write_text(content)
+        print_success(f"Exported to {output}")
+    else:
+        print(content)
+
+
+@profile_app.command("link")
+def profile_link():
+    """
+    Get shareable profile link.
+    
+    Example:
+        repr profile link
+    """
+    if not is_authenticated():
+        print_error("Profile link requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+    
+    profile_config = get_profile_config()
+    username = profile_config.get("username")
+    
+    if username:
+        console.print(f"Your profile: https://repr.dev/@{username}")
+    else:
+        print_info("Username not set")
+        print_info("Run `repr profile set-username <name>`")
+
+
+# =============================================================================
+# STATUS & INFO
+# =============================================================================
+
+@app.command()
+def status(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show repr status and health.
+    
+    Example:
+        repr status
+    """
+    authenticated = is_authenticated()
+    user = get_current_user() if authenticated else None
+    tracked = get_tracked_repos()
+    story_count = get_story_count()
+    unpushed = len(get_unpushed_stories())
+    
+    if json_output:
+        print(json.dumps({
+            "version": __version__,
+            "authenticated": authenticated,
+            "email": user.get("email") if user else None,
+            "repos_tracked": len(tracked),
+            "stories_total": story_count,
+            "stories_unpushed": unpushed,
+        }, indent=2))
+        return
+    
+    print_header()
+    
+    # Auth status
+    if authenticated:
+        email = user.get("email", "unknown")
+        console.print(f"Auth: [{BRAND_SUCCESS}]✓ Signed in as {email}[/]")
+    else:
+        console.print(f"Auth: [{BRAND_MUTED}]○ Not signed in[/]")
+    
+    console.print()
+    
+    # Stats
+    console.print(f"Tracked repos: {len(tracked)}")
+    console.print(f"Stories: {story_count} ({unpushed} unpushed)")
+    
+    console.print()
+    
+    # Next steps
+    if not authenticated:
+        print_info("Run `repr login` to enable cloud sync")
+    elif unpushed > 0:
+        print_info(f"Run `repr push` to publish {unpushed} stories")
+
+
+@app.command()
+def mode():
+    """
+    Show current execution mode and settings.
+    
+    Example:
+        repr mode
+    """
+    from .llm import get_llm_status
+    
+    authenticated = is_authenticated()
+    privacy = get_privacy_settings()
+    llm_status = get_llm_status()
+    
+    console.print("[bold]Mode[/]")
+    console.print()
+    
+    if privacy.get("lock_local_only"):
+        if privacy.get("lock_permanent"):
+            console.print("Data boundary: local only (permanently locked)")
+        else:
+            console.print("Data boundary: local only (locked)")
+    elif authenticated:
+        console.print("Data boundary: cloud-enabled")
+    else:
+        console.print("Data boundary: local only")
+    
+    console.print(f"Default inference: {llm_status['default_mode']}")
+    
+    console.print()
+    
+    # LLM info
+    if llm_status["local"]["available"]:
+        console.print(f"Local LLM: {llm_status['local']['name']} ({llm_status['local']['model']})")
+    else:
+        console.print(f"[{BRAND_MUTED}]Local LLM: not detected[/]")
+    
+    console.print()
+    
+    console.print("Available:")
+    console.print(f"  [{BRAND_SUCCESS}]✓[/] Local generation")
+    if authenticated and is_cloud_allowed():
+        console.print(f"  [{BRAND_SUCCESS}]✓[/] Cloud generation")
+        console.print(f"  [{BRAND_SUCCESS}]✓[/] Sync")
+        console.print(f"  [{BRAND_SUCCESS}]✓[/] Publishing")
+    else:
+        reason = "requires login" if not authenticated else "locked"
+        console.print(f"  [{BRAND_MUTED}]✗[/] Cloud generation ({reason})")
+        console.print(f"  [{BRAND_MUTED}]✗[/] Sync ({reason})")
+        console.print(f"  [{BRAND_MUTED}]✗[/] Publishing ({reason})")
+
+
+@app.command()
+def doctor():
+    """
+    Health check and diagnostics.
+    
+    Example:
+        repr doctor
+    """
+    from .doctor import run_all_checks
+    
+    console.print("Checking repr health...")
+    console.print()
+    
+    report = run_all_checks()
+    
+    for check in report.checks:
+        if check.status == "ok":
+            icon = f"[{BRAND_SUCCESS}]✓[/]"
+        elif check.status == "warning":
+            icon = f"[{BRAND_WARNING}]⚠[/]"
+        else:
+            icon = f"[{BRAND_ERROR}]✗[/]"
+        
+        console.print(f"{icon} {check.name}: {check.message}")
+    
+    console.print()
+    
+    if report.recommendations:
+        console.print("[bold]Recommendations:[/]")
+        for i, rec in enumerate(report.recommendations, 1):
+            console.print(f"  {i}. {rec}")
+        console.print()
+    
+    if report.overall_status == "healthy":
+        print_success("All systems healthy")
+    elif report.overall_status == "warnings":
+        print_warning("Some items need attention")
+    else:
+        print_error("Issues found - see recommendations above")
 
 
 # Entry point

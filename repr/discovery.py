@@ -82,6 +82,11 @@ class RepoInfo:
         }
 
 
+def is_git_repo(path: Path) -> bool:
+    """Check if a path is a git repository."""
+    return (path / ".git").is_dir()
+
+
 def should_skip_directory(path: Path, skip_patterns: list[str]) -> bool:
     """Check if a directory should be skipped."""
     name = path.name

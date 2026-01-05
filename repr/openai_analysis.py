@@ -25,36 +25,47 @@ SYNTHESIS_TEMPERATURE = 0.7
 COMMITS_PER_BATCH = 25
 
 
-def get_openai_client(api_key: str = None, base_url: str = None) -> AsyncOpenAI:
+def get_openai_client(api_key: str = None, base_url: str = None, verbose: bool = False) -> AsyncOpenAI:
     """
     Get OpenAI-compatible client that proxies through our backend.
     
     Args:
         api_key: API key (optional, for local LLM mode)
         base_url: Base URL for API (optional, for local LLM mode)
+        verbose: Whether to print debug info
     
     Returns:
         AsyncOpenAI client
     """
+    import sys
+    
     # If explicit parameters provided, use them (for local mode)
     if api_key:
         kwargs = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
+        if verbose:
+            print(f"[DEBUG] Using explicit API key with base_url: {base_url or 'OpenAI default'}", file=sys.stderr)
         return AsyncOpenAI(**kwargs)
     
     # Use our backend as the proxy - it will forward to LiteLLM
     # The rf_* token is used to authenticate with our backend
     _, litellm_key = get_litellm_config()
     if not litellm_key:
-        raise ValueError("Not logged in. Please run 'rf login' first.")
+        raise ValueError("Not logged in. Please run 'repr login' first.")
     
     # Point to our backend's LLM proxy endpoint
     backend_url = get_api_base().replace("/api/cli", "")
+    proxy_url = f"{backend_url}/api/llm/v1"
+    
+    if verbose:
+        print(f"[DEBUG] Backend URL: {backend_url}", file=sys.stderr)
+        print(f"[DEBUG] Proxy URL: {proxy_url}", file=sys.stderr)
+        print(f"[DEBUG] Token: {litellm_key[:15]}...", file=sys.stderr)
     
     return AsyncOpenAI(
         api_key=litellm_key,
-        base_url=f"{backend_url}/api/llm/v1"
+        base_url=proxy_url
     )
 
 
@@ -146,17 +157,26 @@ List the specific technical work done in this batch. For each item:
 
 Focus on substance, not process."""
 
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=EXTRACTION_TEMPERATURE,
-        max_tokens=16000,  # Increased for reasoning models that use tokens for thinking
-    )
-    
-    return response.choices[0].message.content or ""
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=EXTRACTION_TEMPERATURE,
+            max_tokens=16000,  # Increased for reasoning models that use tokens for thinking
+        )
+        
+        return response.choices[0].message.content or ""
+    except Exception as e:
+        error_msg = str(e).lower()
+        # Handle content moderation blocks gracefully
+        if "blocked" in error_msg or "content" in error_msg or "moderation" in error_msg:
+            # Skip this batch but continue with others
+            return f"[Batch {batch_num} skipped - content filter triggered]"
+        # Re-raise other errors
+        raise
 
 
 async def synthesize_profile(
@@ -290,6 +310,7 @@ async def analyze_repo_openai(
     synthesis_model: str = None,
     verbose: bool = False,
     progress_callback: callable = None,
+    since: str = None,
 ) -> str:
     """
     Analyze a single repository using OpenAI-compatible API.
@@ -303,11 +324,12 @@ async def analyze_repo_openai(
         verbose: Whether to print verbose output
         progress_callback: Optional callback for progress updates
             Signature: callback(step: str, detail: str, repo: str, progress: float)
+        since: Only analyze commits after this point (SHA or date like '2026-01-01')
     
     Returns:
         Repository analysis/narrative in markdown
     """
-    client = get_openai_client(api_key=api_key, base_url=base_url)
+    client = get_openai_client(api_key=api_key, base_url=base_url, verbose=verbose)
     
     if progress_callback:
         progress_callback(
@@ -322,6 +344,7 @@ async def analyze_repo_openai(
         repo_path=repo.path,
         count=200,  # Last 200 commits
         days=730,  # Last 2 years
+        since=since,
     )
     
     if not commits:
@@ -501,7 +524,7 @@ async def analyze_repos_openai(
             progress=92.0,
         )
     
-    client = get_openai_client(api_key=api_key, base_url=base_url)
+    client = get_openai_client(api_key=api_key, base_url=base_url, verbose=verbose)
     
     # Aggregate metadata from all repos (injected directly, not LLM-generated)
     total_commits = sum(r.commit_count for r in repos)
