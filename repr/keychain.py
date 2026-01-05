@@ -56,7 +56,7 @@ def is_keyring_available() -> bool:
 
 def _get_encryption_key() -> bytes:
     """Get or generate encryption key for fallback storage."""
-    REPR_HOME.mkdir(exist_ok=True)
+    REPR_HOME.mkdir(parents=True, exist_ok=True)
     
     if KEY_FILE.exists():
         return base64.b64decode(KEY_FILE.read_text().strip())
@@ -115,7 +115,7 @@ def _load_fallback_secrets() -> dict[str, str]:
 
 def _save_fallback_secrets(secrets_dict: dict[str, str]) -> None:
     """Save secrets to fallback encrypted file."""
-    REPR_HOME.mkdir(exist_ok=True)
+    REPR_HOME.mkdir(parents=True, exist_ok=True)
     key = _get_encryption_key()
     encrypted = _simple_encrypt(json.dumps(secrets_dict), key)
     
