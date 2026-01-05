@@ -1,220 +1,128 @@
 # Repr CLI
 
-A privacy-first CLI that converts your git commit history into a living professional profile at `repr.dev/{username}`. Track repositories, extract commit stories, and keep your profile automatically up-to-date.
+A local-first developer tool that turns your git commit history into professional narratives.
+
+**Privacy Guarantee:** Zero data leaves your machine unless you explicitly publish. Your keys, your models, your data.
 
 [![PyPI version](https://img.shields.io/pypi/v/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build](https://github.com/repr-app/cli/actions/workflows/build-release.yml/badge.svg)](https://github.com/repr-app/cli/actions/workflows/build-release.yml)
-[![Tests](https://github.com/repr-app/cli/actions/workflows/test.yml/badge.svg)](https://github.com/repr-app/cli/actions/workflows/test.yml)
 
-## Install
+## Philosophy
 
-### Option 1: Homebrew (macOS/Linux) 🍺
+Repr is built on three core principles:
 
+1.  **Local-First:** Analysis happens on your machine. You own the output.
+2.  **Bring Your Own Keys:** Use your own OpenAI API key or a local LLM (Ollama, etc.). We don't sit in the middle.
+3.  **Opt-In Cloud:** Publishing to `repr.dev` is strictly optional. Use it for backup or sharing, or ignore it entirely.
+
+## Installation
+
+### macOS / Linux (Homebrew)
 ```bash
 brew tap repr-app/tap
 brew install repr
 ```
 
-### Option 2: One-Line Installer (macOS/Linux) ⚡
+### Direct Download
+Download pre-built binaries for macOS, Linux, and Windows from the [latest release](https://github.com/repr-app/cli/releases/latest).
 
-```bash
-curl -sSL https://repr.dev/install.sh | sh
-```
-
-### Option 3: Binary Download (No Python Required) 📦
-
-Download pre-built binaries from the [latest release](https://github.com/repr-app/cli/releases/latest):
-
-**macOS:**
-```bash
-curl -L https://github.com/repr-app/cli/releases/latest/download/repr-macos.tar.gz -o repr-macos.tar.gz
-tar -xzf repr-macos.tar.gz
-sudo mv repr /usr/local/bin/
-```
-
-**Linux:**
-```bash
-curl -L https://github.com/repr-app/cli/releases/latest/download/repr-linux.tar.gz -o repr-linux.tar.gz
-tar -xzf repr-linux.tar.gz
-sudo mv repr /usr/local/bin/
-```
-
-**Windows:**
-Download `repr-windows.exe` from releases, rename to `repr.exe`, and add to your PATH.
-
-### Option 4: Python Package Manager 🐍
-
-Recommended (isolated):
-
+### Python (pipx)
 ```bash
 pipx install repr-cli
 ```
 
-Alternative:
+## The Local Workflow
+
+You can use Repr entirely offline or with your own API keys. No account required.
+
+### 1. Analyze a repository
+Generate commit stories from your local git history.
 
 ```bash
-pip install repr-cli
+# Using a local LLM (e.g., Ollama running Llama 3)
+repr analyze ~/code/my-project --local --model llama3
+
+# Or using your own OpenAI key
+export OPENAI_API_KEY=sk-...
+repr analyze ~/code/my-project --local --model gpt-4o
 ```
 
-## Quick start
+This reads your git log, diffs, and file context to generate meaningful summaries of your work. All processing happens locally or directly against the API you specify.
+
+### 2. Inspect your stories
+View the generated stories stored on your machine.
+
+```bash
+repr stories --repo my-project
+```
+
+Output is stored in `~/.repr/`, staying fully under your control.
+
+### 3. Track multiple repositories
+You can configure Repr to watch multiple projects.
+
+```bash
+repr repos add ~/code/work-project
+repr repos add ~/code/side-project
+```
+
+## Optional: Cloud & Publishing
+
+If you want to back up your stories or create a public profile (e.g., `repr.dev/yourname`), you can sync your local data to the cloud.
+
+**This is the only time data leaves your machine.**
 
 ### 1. Authenticate
-
 ```bash
 repr login
 ```
 
-### 2. Add repositories to track
+### 2. Sync
+Push your locally generated stories to your private cloud storage.
 
 ```bash
-# Add a specific repo or directory with multiple repos
-repr repos add ~/code/myproject
-
-# Or auto-discover repos in a directory
-repr repos scan
-```
-
-### 3. Sync your work
-
-```bash
-# Sync all tracked repos (analyzes new commits and pushes stories)
 repr sync
-
-# Or sync just one repo
-repr sync --repo ~/code/myproject
 ```
 
-### 4. Optional: Enable automatic syncing
+### 3. Automate (Optional)
+Install git hooks to automatically analyze and sync new commits as you work.
 
 ```bash
-# Install git hooks for auto-sync on commit
 repr hook install --all
 ```
 
-### 5. View your stories
+## Configuration
+
+Repr respects standard environment variables and local configuration.
+
+**Config file:** `~/.repr/config.json`
+
+### Using Local LLMs (Ollama, LocalAI)
+Point Repr to any OpenAI-compatible endpoint:
 
 ```bash
-# List recent commit stories
-repr stories
-
-# Filter by repo or technology
-repr stories --repo myproject --technologies React
+repr config-set --api-base http://localhost:11434/v1 --model llama3
 ```
 
-### 6. Share your profile
+### Privacy Modes
 
-```bash
-# Get your public profile URL
-repr whoami
-```
+| Mode | Command | Behavior |
+|------|---------|----------|
+| **Local LLM** | `repr analyze --local` | Uses your local LLM endpoint. Zero external network calls. |
+| **BYOK** | `repr analyze --local` | Connects directly to OpenAI/Anthropic using your key. |
+| **Offline** | `repr analyze --offline` | Metrics only. No LLM, no network. |
+| **Cloud** | `repr analyze` | **(Requires Login)** Uses Repr's managed LLM backend. |
 
-Your profile lives at `repr.dev/{username}` and updates automatically as you work!
+## Command Reference
 
-## Core workflow
-
-The modern workflow uses **tracked repositories** for automatic syncing:
-
-```bash
-# 1. Add repos to track
-repr repos add ~/code
-
-# 2. Sync new commits (manual)
-repr sync
-
-# 3. Or install hooks for auto-sync on commit
-repr hook install --all
-```
-
-Stories are synced to `repr.dev` and your public profile updates automatically.
-
-## One-off analysis
-
-For analyzing repos without tracking them:
-
-```bash
-# Analyze once and push (doesn't add to tracked list)
-repr analyze ~/code/external-project
-```
-
-## Commands
-
-### Repository tracking & syncing
-
-- `repr repos list [--json]`: list tracked repositories with sync status
-- `repr repos add <path>`: add repository or directory to tracking
-- `repr repos remove <path>`: stop tracking a repository
-- `repr repos scan`: auto-discover repos in configured paths
-- `repr sync [--repo PATH] [--all] [--json]`: sync tracked repos (analyze new commits and push)
-
-### Git hooks (auto-sync)
-
-- `repr hook install [--repo PATH|--all]`: install post-commit hooks for auto-sync
-- `repr hook remove [--repo PATH|--all]`: remove post-commit hooks
-- `repr hook status [--json]`: show hook installation status
-
-### Stories & data
-
-- `repr stories [--repo NAME] [--since ...] [--technologies ...] [--limit N] [--json]`: list commit stories
-- `repr analyze <paths...> [--json] [--since ...] [--offline] [--local]`: one-off analysis (auto-pushes unless `--offline`)
-
-### Auth & status
-
-- `repr login`: authenticate with repr.dev
-- `repr logout`: clear authentication
-- `repr whoami [--json]`: show user info and public profile URL
-- `repr status [--json]`: health/status overview
-
-### Configuration
-
-- `repr config [--json]`: show config and endpoints
-- `repr config-set [...]`: configure LLM models and local endpoints
-
-Environment variables:
-
-```bash
-REPR_DEV=1         # enable dev mode (localhost backend)
-REPR_API_BASE=URL  # override API base URL
-```
-
-Config location: `~/.repr/config.json`
-
-## Privacy modes
-
-For one-off analysis without cloud LLM:
-
-| Mode | How | Notes |
-|------|-----|-------|
-| **Cloud** | `repr analyze <paths...>` | Default, requires `repr login` |
-| **Local LLM** | `repr analyze <paths...> --local` | Uses OpenAI-compatible local endpoint |
-| **Offline** | `repr analyze <paths...> --offline` | Metrics-only, no network, no push |
-
-Local LLM examples:
-
-```bash
-repr analyze ~/code --local --model llama3.2
-repr analyze ~/code --local --api-base http://localhost:11434/v1
-```
-
-## VS Code Extension integration
-
-Commands support `--json` for machine-readable output (no Rich formatting):
-
-```bash
-repr repos list --json
-repr stories --json
-repr sync --json
-repr status --json
-repr whoami --json
-repr hook status --json
-```
-
-## Requirements
-
-- Python 3.10+
-- Git
-- For `--local`: an OpenAI-compatible local endpoint (e.g. Ollama)
+- `repr analyze <path>`: Analyze a repo and generate stories.
+- `repr stories`: List generated stories.
+- `repr repos list|add|remove`: Manage tracked repositories.
+- `repr config`: View current configuration.
+- `repr sync`: Upload local stories to repr.dev (requires login).
+- `repr whoami`: Check login status.
 
 ## License
 
