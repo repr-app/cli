@@ -37,7 +37,7 @@ jobs:
       - name: Test CLI works
         run: |
           repr --help
-          repr config --json
+          repr config show --json
 
       - name: Test PyInstaller build
         if: matrix.python-version == '3.11'
