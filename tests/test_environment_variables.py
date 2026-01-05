@@ -45,12 +45,12 @@ class TestReprHomeVariable:
         custom_home = temp_dir / "custom_repr"
         monkeypatch.setenv("REPR_HOME", str(custom_home))
 
-        # Reload modules
+        # Reload modules (keychain first, then config)
         import repr.config
         import repr.keychain
         import importlib
-        importlib.reload(repr.config)
         importlib.reload(repr.keychain)
+        importlib.reload(repr.config)
 
         # Keychain should use custom home
         assert repr.keychain.REPR_HOME == custom_home

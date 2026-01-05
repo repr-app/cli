@@ -27,9 +27,11 @@ def mock_repr_home(temp_dir: Path, monkeypatch) -> Path:
     repr_home.mkdir()
     monkeypatch.setenv("REPR_HOME", str(repr_home))
 
-    # Reload config module to pick up new env var
+    # Reload modules to pick up new env var
     import repr.config
+    import repr.keychain
     import importlib
+    importlib.reload(repr.keychain)
     importlib.reload(repr.config)
 
     return repr_home
