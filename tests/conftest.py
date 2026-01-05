@@ -13,11 +13,47 @@ import pytest
 from git import Repo
 
 
+def _force_cleanup_git_repo(path: Path) -> None:
+    """Force cleanup of git repo files on Windows.
+    
+    On Windows, git processes may hold file handles that prevent deletion.
+    This function forcibly closes any git handles and retries deletion.
+    """
+    import gc
+    import shutil
+    import sys
+    import time
+    
+    # Force garbage collection to release any git objects
+    gc.collect()
+    
+    if sys.platform == "win32":
+        # On Windows, give git processes time to release handles
+        time.sleep(0.1)
+        
+        # Retry deletion with exponential backoff
+        for i in range(5):
+            try:
+                shutil.rmtree(path, ignore_errors=False)
+                return
+            except PermissionError:
+                gc.collect()
+                time.sleep(0.1 * (2 ** i))
+        
+        # Final attempt with ignore_errors
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory for tests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    tmpdir = tempfile.mkdtemp()
+    try:
         yield Path(tmpdir)
+    finally:
+        _force_cleanup_git_repo(Path(tmpdir))
 
 
 @pytest.fixture
@@ -38,8 +74,10 @@ def mock_repr_home(temp_dir: Path, monkeypatch) -> Path:
 
 
 @pytest.fixture
-def mock_git_repo(temp_dir: Path) -> Repo:
+def mock_git_repo(temp_dir: Path) -> Generator[Repo, None, None]:
     """Create a mock git repository for testing."""
+    import gc
+    
     repo_path = temp_dir / "test-repo"
     repo_path.mkdir()
 
@@ -47,8 +85,9 @@ def mock_git_repo(temp_dir: Path) -> Repo:
     repo = Repo.init(repo_path)
 
     # Configure git user
-    repo.config_writer().set_value("user", "name", "Test User").release()
-    repo.config_writer().set_value("user", "email", "test@example.com").release()
+    with repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
 
     # Create initial commit
     readme = repo_path / "README.md"
@@ -56,7 +95,11 @@ def mock_git_repo(temp_dir: Path) -> Repo:
     repo.index.add(["README.md"])
     repo.index.commit("Initial commit")
 
-    return repo
+    yield repo
+    
+    # Cleanup: close git repo to release file handles (important on Windows)
+    repo.close()
+    gc.collect()
 
 
 @pytest.fixture

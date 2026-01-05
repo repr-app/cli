@@ -5,16 +5,24 @@ Handles installation and removal of post-commit hooks that queue commits
 for story generation. Implements local commit queue with file locking.
 """
 
-import fcntl
 import json
 import os
 import stat
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from git import Repo, InvalidGitRepositoryError
+
+# Cross-platform file locking
+if sys.platform == "win32":
+    import msvcrt
+    _USE_FCNTL = False
+else:
+    import fcntl
+    _USE_FCNTL = True
 
 
 # Hook script that queues commits locally (never triggers cloud)
@@ -350,7 +358,11 @@ def _acquire_lock(lock_path: Path, timeout: float = LOCK_TIMEOUT) -> int:
     start = time.time()
     while time.time() - start < timeout:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _USE_FCNTL:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                # Windows: lock the first byte of the file
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return fd
         except (IOError, OSError):
             time.sleep(0.1)
@@ -362,7 +374,14 @@ def _acquire_lock(lock_path: Path, timeout: float = LOCK_TIMEOUT) -> int:
 def _release_lock(fd: int) -> None:
     """Release a file lock."""
     try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        if _USE_FCNTL:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            # Windows: unlock the first byte
+            try:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except (IOError, OSError):
+                pass  # May fail if not locked, ignore
         os.close(fd)
     except Exception:
         pass
