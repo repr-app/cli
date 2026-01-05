@@ -68,7 +68,7 @@ jobs:
             --collect-all=typer \
             --collect-all=rich \
             --collect-all=pygments \
-            repr/cli.py
+            repr/__main__.py
 
       - name: Build with PyInstaller (Windows)
         if: runner.os == 'Windows'
@@ -96,7 +96,7 @@ jobs:
             --collect-all=typer `
             --collect-all=rich `
             --collect-all=pygments `
-            repr/cli.py
+            repr/__main__.py
 
       - name: Test binary (Unix)
         if: runner.os != 'Windows'
