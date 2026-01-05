@@ -37,31 +37,43 @@ pipx install repr-cli
 
 You can use Repr entirely offline or with your own API keys. No account required.
 
-### 1. Analyze a repository
-Generate commit stories from your local git history.
+### 1. Initialize
+Scan for repositories and set up local config.
+
+```bash
+repr init ~/code
+```
+
+### 2. Generate stories
+Create stories from your commit history.
 
 ```bash
 # Using a local LLM (e.g., Ollama running Llama 3)
-repr analyze ~/code/my-project --local --model llama3
+repr generate --local
 
-# Or using your own OpenAI key
-export OPENAI_API_KEY=sk-...
-repr analyze ~/code/my-project --local --model gpt-4o
+# Or configure your own API key (BYOK)
+repr llm add openai
+repr generate
+
+# Or use cloud (requires login)
+repr login
+repr generate --cloud
 ```
 
 This reads your git log, diffs, and file context to generate meaningful summaries of your work. All processing happens locally or directly against the API you specify.
 
-### 2. Inspect your stories
-View the generated stories stored on your machine.
+### 3. View your stories
+Inspect the generated stories stored on your machine.
 
 ```bash
-repr stories --repo my-project
+repr stories
+repr story view <id>
 ```
 
 Output is stored in `~/.repr/`, staying fully under your control.
 
-### 3. Track multiple repositories
-You can configure Repr to watch multiple projects.
+### 4. Track multiple repositories
+Configure Repr to watch multiple projects.
 
 ```bash
 repr repos add ~/code/work-project
@@ -81,18 +93,25 @@ Alternatively, use the cloud for backup and sharing: sync your locally generated
 repr login
 ```
 
-### 2. Sync
-Push your locally generated stories to your private cloud storage.
+### 2. Push stories
+Publish your locally generated stories to your profile.
+
+```bash
+repr push
+```
+
+### 3. Sync across devices
+Keep your stories in sync.
 
 ```bash
 repr sync
 ```
 
-### 3. Automate (Optional)
-Install git hooks to automatically analyze and sync new commits as you work.
+### 4. Automate (Optional)
+Install git hooks to automatically track new commits as you work.
 
 ```bash
-repr hook install --all
+repr hooks install --all
 ```
 
 ## Configuration
@@ -105,26 +124,102 @@ Repr respects standard environment variables and local configuration.
 Point Repr to any OpenAI-compatible endpoint:
 
 ```bash
-repr config-set --api-base http://localhost:11434/v1 --model llama3
+repr llm configure
+# Or manually:
+repr config set llm.local_api_url http://localhost:11434/v1
+repr config set llm.local_model llama3.2
+```
+
+### Bring Your Own Key (BYOK)
+Configure your own API keys:
+
+```bash
+repr llm add openai
+repr llm add anthropic
+repr llm use byok:openai
 ```
 
 ### Privacy Modes
 
 | Mode | Command | Behavior |
 |------|---------|----------|
-| **Local LLM** | `repr analyze --local` | Uses your local LLM endpoint. Zero external network calls. |
-| **BYOK** | `repr analyze --local` | Connects directly to OpenAI/Anthropic using your key. |
-| **Offline** | `repr analyze --offline` | Metrics only. No LLM, no network. |
-| **Cloud** | `repr analyze` | **(Requires Login)** Uses Repr's backend. Sends metadata + diffs. Zero data retention (ZDR) policy—no logging, ephemeral processing only. |
+| **Local LLM** | `repr generate --local` | Uses your local LLM endpoint (Ollama, etc.). Zero external network calls. |
+| **BYOK** | `repr llm add <provider>` | Configure your own API keys (OpenAI, Anthropic, etc.). Direct connection, no middleman. |
+| **Cloud** | `repr generate --cloud` | **(Requires Login)** Uses Repr's backend. Sends metadata + diffs. Zero data retention (ZDR) policy—no logging, ephemeral processing only. |
+| **Offline** | Local operations only | Works without network. View stories, repos, export profiles. |
 
 ## Command Reference
 
-- `repr analyze <path>`: Analyze a repo and generate stories.
-- `repr stories`: List generated stories.
-- `repr repos list|add|remove`: Manage tracked repositories.
-- `repr config`: View current configuration.
-- `repr sync`: Upload local stories to repr.dev (requires login).
-- `repr whoami`: Check login status.
+### Getting Started
+- `repr init [path]` - Initialize repr, scan for repositories
+- `repr login` - Authenticate with repr.dev
+- `repr whoami` - Show current user
+- `repr logout` - Sign out
+- `repr status` - Show overall status and health
+- `repr mode` - Show current execution mode
+- `repr doctor` - Run health checks and diagnostics
+
+### Generation & Analysis
+- `repr generate [--local|--cloud]` - Generate stories from commits
+  - `--repo <path>` - Generate for specific repo
+  - `--commits <sha1,sha2>` - Generate from specific commits
+  - `--template <name>` - Use template (resume, changelog, narrative, interview)
+  - `--dry-run` - Preview what would be sent
+- `repr week [--save]` - Show work from this week
+- `repr since <date> [--save]` - Show work since a date
+- `repr standup [--days N]` - Quick summary for standup
+
+### Stories
+- `repr stories [--repo NAME] [--needs-review]` - List all stories
+- `repr story <action> <id>` - Manage a story (view, edit, delete, hide, feature)
+- `repr review` - Interactive review workflow
+- `repr commits [--repo NAME] [--limit N]` - List recent commits
+
+### Cloud Operations
+- `repr push [--story ID] [--all]` - Publish stories to repr.dev
+- `repr sync` - Sync stories across devices
+- `repr pull` - Pull remote stories to local
+
+### Repositories
+- `repr repos [list|add|remove|pause|resume] [path]` - Manage tracked repos
+
+### Git Hooks
+- `repr hooks install [--all|--repo PATH]` - Install post-commit hooks
+- `repr hooks remove [--all|--repo PATH]` - Remove hooks
+- `repr hooks status` - Show hook status
+
+### LLM Configuration
+- `repr llm add <provider>` - Configure BYOK provider (openai, anthropic, groq, together)
+- `repr llm remove <provider>` - Remove BYOK provider
+- `repr llm use <mode>` - Set default mode (local, cloud, byok:<provider>)
+- `repr llm configure` - Configure local LLM interactively
+- `repr llm test` - Test LLM connection
+
+### Privacy
+- `repr privacy explain` - Show privacy guarantees
+- `repr privacy audit [--days N]` - Show what data was sent to cloud
+- `repr privacy lock-local [--permanent]` - Disable cloud features
+- `repr privacy unlock-local` - Re-enable cloud features
+
+### Configuration
+- `repr config show [key]` - Display configuration
+- `repr config set <key> <value>` - Set configuration value
+- `repr config edit` - Open config in $EDITOR
+
+### Data Management
+- `repr data` - Show local storage info
+- `repr data backup [--output FILE]` - Backup all local data
+- `repr data restore <file> [--merge]` - Restore from backup
+- `repr data clear-cache` - Clear local cache
+
+### Profile
+- `repr profile` - View profile
+- `repr profile update [--preview]` - Generate/update profile from stories
+- `repr profile set-bio <text>` - Set profile bio
+- `repr profile set-location <text>` - Set location
+- `repr profile set-available <bool>` - Set availability status
+- `repr profile export [--format FORMAT]` - Export profile (md, json)
+- `repr profile link` - Get shareable profile link
 
 ## License
 
