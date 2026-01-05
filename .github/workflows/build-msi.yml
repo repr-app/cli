@@ -1,0 +1,104 @@
+name: Build Windows MSI (Optional)
+
+on:
+  workflow_dispatch:  # Manual trigger only
+    inputs:
+      version:
+        description: 'Version number (e.g., 0.2.0)'
+        required: true
+        type: string
+
+jobs:
+  build-msi:
+    name: Build Windows MSI Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+
+      - name: Build binary with PyInstaller
+        run: |
+          pyinstaller repr.spec
+
+      - name: Install WiX Toolset
+        run: |
+          choco install wixtoolset -y
+          refreshenv
+
+      - name: Create WiX installer files
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          
+          # Create Product.wxs
+          @"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product Id="*" 
+                     Name="Repr CLI" 
+                     Language="1033" 
+                     Version="$version.0" 
+                     Manufacturer="Repr" 
+                     UpgradeCode="12345678-1234-1234-1234-123456789012">
+              
+              <Package InstallerVersion="200" 
+                       Compressed="yes" 
+                       InstallScope="perMachine" 
+                       Platform="x64" />
+
+              <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+              <MediaTemplate EmbedCab="yes" />
+
+              <Feature Id="ProductFeature" Title="Repr CLI" Level="1">
+                <ComponentGroupRef Id="ProductComponents" />
+              </Feature>
+
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="ProgramFiles64Folder">
+                  <Directory Id="INSTALLFOLDER" Name="Repr CLI" />
+                </Directory>
+                <Directory Id="ProgramMenuFolder">
+                  <Directory Id="ApplicationProgramsFolder" Name="Repr CLI"/>
+                </Directory>
+              </Directory>
+
+              <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+                <Component Id="ReprExe" Guid="*">
+                  <File Id="ReprExe" Source="dist\repr.exe" KeyPath="yes"/>
+                  <Environment Id="PATH" Name="PATH" Value="[INSTALLFOLDER]" 
+                               Permanent="no" Part="last" Action="set" System="yes" />
+                </Component>
+              </ComponentGroup>
+
+              <Icon Id="icon.ico" SourceFile="dist\repr.exe"/>
+              <Property Id="ARPPRODUCTICON" Value="icon.ico" />
+            </Product>
+          </Wix>
+          "@ | Out-File -FilePath Product.wxs -Encoding UTF8
+
+      - name: Build MSI
+        shell: cmd
+        run: |
+          "C:\Program Files (x86)\WiX Toolset v3.11\bin\candle.exe" Product.wxs
+          "C:\Program Files (x86)\WiX Toolset v3.11\bin\light.exe" -ext WixUIExtension -cultures:en-us Product.wixobj -out repr-cli-${{ github.event.inputs.version }}.msi
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: repr-cli-msi
+          path: repr-cli-${{ github.event.inputs.version }}.msi
+          retention-days: 30
+

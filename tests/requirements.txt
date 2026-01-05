@@ -1,0 +1,34 @@
+# Test dependencies for repr CLI test suite
+# Install with: pip install -r tests/requirements.txt
+
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Code coverage
+pytest-cov>=4.1.0
+
+# Mocking and fixtures
+pytest-mock>=3.11.0
+
+# Test isolation (optional but recommended)
+pytest-forked>=1.6.0
+
+# Better test output
+pytest-sugar>=0.9.7
+
+# Benchmarking (optional)
+pytest-benchmark>=4.0.0
+
+# Production dependencies (needed for tests)
+# These should match main requirements
+typer>=0.9.0
+rich>=13.0.0
+gitpython>=3.1.0
+pygments>=2.16.0
+httpx>=0.25.0
+openai>=1.0.0
+keyring>=24.0.0
+
+# Additional dependencies for future tests
+tiktoken>=0.5.0  # For token estimation tests (Gap 6)

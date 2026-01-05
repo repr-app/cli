@@ -1,0 +1,198 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v0.2.0
+  workflow_dispatch:  # Allow manual triggering
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: repr-macos
+            asset_name: repr-macos.tar.gz
+          - os: ubuntu-latest
+            artifact_name: repr-linux
+            asset_name: repr-linux.tar.gz
+          - os: windows-latest
+            artifact_name: repr-windows
+            asset_name: repr-windows.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+
+      - name: Build with PyInstaller (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          pyinstaller --onefile \
+            --name repr \
+            --console \
+            --hidden-import=repr \
+            --hidden-import=repr.cli \
+            --hidden-import=repr.api \
+            --hidden-import=repr.auth \
+            --hidden-import=repr.config \
+            --hidden-import=repr.discovery \
+            --hidden-import=repr.doctor \
+            --hidden-import=repr.extractor \
+            --hidden-import=repr.hooks \
+            --hidden-import=repr.keychain \
+            --hidden-import=repr.llm \
+            --hidden-import=repr.openai_analysis \
+            --hidden-import=repr.privacy \
+            --hidden-import=repr.storage \
+            --hidden-import=repr.templates \
+            --hidden-import=repr.tools \
+            --hidden-import=repr.ui \
+            --collect-all=typer \
+            --collect-all=rich \
+            --collect-all=pygments \
+            repr/cli.py
+
+      - name: Build with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --onefile `
+            --name repr `
+            --console `
+            --hidden-import=repr `
+            --hidden-import=repr.cli `
+            --hidden-import=repr.api `
+            --hidden-import=repr.auth `
+            --hidden-import=repr.config `
+            --hidden-import=repr.discovery `
+            --hidden-import=repr.doctor `
+            --hidden-import=repr.extractor `
+            --hidden-import=repr.hooks `
+            --hidden-import=repr.keychain `
+            --hidden-import=repr.llm `
+            --hidden-import=repr.openai_analysis `
+            --hidden-import=repr.privacy `
+            --hidden-import=repr.storage `
+            --hidden-import=repr.templates `
+            --hidden-import=repr.tools `
+            --hidden-import=repr.ui `
+            --collect-all=typer `
+            --collect-all=rich `
+            --collect-all=pygments `
+            repr/cli.py
+
+      - name: Test binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x dist/repr
+          ./dist/repr --help
+
+      - name: Test binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          dist\repr.exe --help
+
+      - name: Package binary (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar -czf ${{ matrix.asset_name }} repr
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/*.exe
+          retention-days: 7
+
+  # Optional: Build DEB package for Ubuntu
+  build-deb:
+    name: Build DEB package
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev devscripts debhelper
+          python -m pip install --upgrade pip
+          pip install stdeb
+
+      - name: Build DEB package
+        run: |
+          python setup.py --command-packages=stdeb.command bdist_deb
+
+      - name: Find and rename DEB
+        run: |
+          DEB_FILE=$(find deb_dist -name "*.deb" | head -n 1)
+          cp "$DEB_FILE" repr-cli.deb
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repr-deb
+          path: repr-cli.deb
+          retention-days: 7
+
+  release:
+    name: Create Release
+    needs: [build, build-deb]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure
+        run: ls -R artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/repr-macos/repr-macos.tar.gz
+            artifacts/repr-linux/repr-linux.tar.gz
+            artifacts/repr-windows/repr-windows.exe
+            artifacts/repr-deb/repr-cli.deb
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

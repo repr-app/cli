@@ -352,14 +352,71 @@ def generate(
         
         # Dry run: show what would be sent
         if dry_run:
-            console.print(f"  Would analyze {len(commit_list)} commits")
+            from .openai_analysis import estimate_tokens, get_batch_size
+            from .config import load_config
+
+            config = load_config()
+            max_commits = config.get("generation", {}).get("max_commits_per_batch", 50)
+            token_limit = config.get("generation", {}).get("token_limit", 100000)
+
+            console.print(f"  [bold]Dry Run Preview[/]")
+            console.print(f"  Commits to analyze: {len(commit_list)}")
             console.print(f"  Template: {template}")
+            console.print()
+
+            # Estimate tokens
+            estimated_tokens = estimate_tokens(commit_list)
+            console.print(f"  Estimated tokens: ~{estimated_tokens:,}")
+
+            # Check if we need to split into batches
+            if len(commit_list) > max_commits:
+                num_batches = (len(commit_list) + max_commits - 1) // max_commits
+                console.print()
+                console.print(f"  ⚠ {len(commit_list)} commits exceeds {max_commits}-commit limit")
+                console.print()
+                console.print(f"  Will split into {num_batches} batches:")
+                for batch_num in range(num_batches):
+                    start = batch_num * max_commits + 1
+                    end = min((batch_num + 1) * max_commits, len(commit_list))
+                    batch_commits = commit_list[batch_num * max_commits:end]
+                    batch_tokens = estimate_tokens(batch_commits)
+                    console.print(f"    Batch {batch_num + 1}: commits {start}-{end} (est. {batch_tokens // 1000}k tokens)")
+
+            console.print()
+            console.print("  Sample commits:")
             for c in commit_list[:5]:
-                console.print(f"    • {c['sha']} {c['message'][:50]}")
+                console.print(f"    • {c['sha'][:7]} {c['message'][:50]}")
             if len(commit_list) > 5:
                 console.print(f"    ... and {len(commit_list) - 5} more")
             continue
         
+        # Check token limits and prompt user if needed
+        from .openai_analysis import estimate_tokens
+        from .config import load_config
+
+        config = load_config()
+        max_commits = config.get("generation", {}).get("max_commits_per_batch", 50)
+        token_limit = config.get("generation", {}).get("token_limit", 100000)
+
+        # Check if we exceed limits (only warn for cloud generation)
+        if cloud and len(commit_list) > max_commits:
+            num_batches = (len(commit_list) + max_commits - 1) // max_commits
+            console.print()
+            console.print(f"  ⚠ {len(commit_list)} commits exceeds {max_commits}-commit limit")
+            console.print()
+            console.print(f"  Will split into {num_batches} batches:")
+            for batch_num in range(num_batches):
+                start = batch_num * max_commits + 1
+                end = min((batch_num + 1) * max_commits, len(commit_list))
+                batch_commits = commit_list[batch_num * max_commits:end]
+                batch_tokens = estimate_tokens(batch_commits)
+                console.print(f"    Batch {batch_num + 1}: commits {start}-{end} (est. {batch_tokens // 1000}k tokens)")
+            console.print()
+
+            if not confirm("Continue with generation?"):
+                console.print(f"  [{BRAND_MUTED}]Skipped {repo_info.name}[/]")
+                continue
+
         # Generate stories
         stories = _generate_stories(
             commits=commit_list,
@@ -740,28 +797,53 @@ def stories_review():
     for i, story in enumerate(needs_review):
         console.print(f"[bold]Story {i+1} of {len(needs_review)}[/]")
         console.print()
-        
+
         # Show story summary
         console.print(f"⚠ \"{story.get('summary', 'Untitled')}\"")
         console.print(f"  {story.get('repo_name', 'unknown')} • {len(story.get('commit_shas', []))} commits")
         console.print()
-        
+
         # Load and show content preview
         result = load_story(story["id"])
         if result:
-            content, _ = result
-            # Show first 500 chars
-            preview = content[:500]
-            if len(content) > 500:
-                preview += "..."
-            console.print(preview)
-        
+            content, metadata = result
+
+            # Check if this is a STAR format story (interview template)
+            template = metadata.get('template', '')
+            if template == 'interview':
+                # Display STAR format
+                console.print("[bold]What was built:[/]")
+                # Extract "what was built" section from content
+                lines = content.split('\n')
+                for line in lines[:10]:  # Show first 10 lines as preview
+                    console.print(f"  {line}")
+
+                console.print()
+                console.print("[bold]Technologies:[/]")
+                # Try to extract technologies from metadata or content
+                techs = metadata.get('technologies', [])
+                if techs:
+                    console.print(f"  {', '.join(techs)}")
+                else:
+                    console.print("  (Not specified)")
+
+                console.print()
+                console.print("[bold]Confidence:[/] {0}".format(
+                    metadata.get('confidence', 'Medium')
+                ))
+            else:
+                # Show first 500 chars as preview
+                preview = content[:500]
+                if len(content) > 500:
+                    preview += "..."
+                console.print(preview)
+
         console.print()
-        
-        # Prompt for action
+
+        # Prompt for action (added regenerate option)
         action = Prompt.ask(
-            "[a] Approve  [e] Edit  [d] Delete  [s] Skip  [q] Quit",
-            choices=["a", "e", "d", "s", "q"],
+            "[a] Approve  [e] Edit  [r] Regenerate  [d] Delete  [s] Skip  [q] Quit",
+            choices=["a", "e", "r", "d", "s", "q"],
             default="s",
         )
         
@@ -775,6 +857,11 @@ def stories_review():
             subprocess.run([editor, str(md_path)])
             update_story_metadata(story["id"], {"needs_review": False})
             print_success("Story updated and approved")
+        elif action == "r":
+            # Regenerate story with different template
+            print_info("Regenerate action not yet implemented")
+            print_info("This feature is planned for a future release")
+            print_info("For now, you can delete and re-generate the story manually")
         elif action == "d":
             if confirm("Delete this story?"):
                 delete_story(story["id"])
@@ -2003,18 +2090,37 @@ def profile_set_available(
 
 @profile_app.command("export")
 def profile_export(
-    format: str = typer.Option("md", "--format", "-f", help="Format: md, html, json"),
+    format: str = typer.Option("md", "--format", "-f", help="Format: md, html, json, pdf"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file"),
+    since: Optional[str] = typer.Option(None, "--since", help="Export only recent work (date filter)"),
 ):
     """
     Export profile to different formats.
-    
+
     Example:
         repr profile export --format md > profile.md
+        repr profile export --format json --output profile.json
+        repr profile export --format html --output profile.html
     """
     story_list = list_stories()
+
+    # Apply date filter if specified
+    if since and isinstance(since, str):
+        from datetime import datetime
+        try:
+            # Parse the date (support ISO format)
+            since_date = datetime.fromisoformat(since)
+            story_list = [
+                s for s in story_list
+                if s.get('created_at') and datetime.fromisoformat(s['created_at'][:10]) >= since_date
+            ]
+        except ValueError:
+            print_error(f"Invalid date format: {since}")
+            print_info("Use ISO format: YYYY-MM-DD")
+            raise typer.Exit(1)
+
     profile_config = get_profile_config()
-    
+
     if format == "json":
         data = {
             "profile": profile_config,
@@ -2032,10 +2138,23 @@ def profile_export(
             lines.append(f"*{s.get('repo_name', 'unknown')} • {s.get('created_at', '')[:10]}*")
             lines.append("")
         content = "\n".join(lines)
+    elif format == "html":
+        # HTML export not yet implemented
+        print_error("HTML export not yet implemented")
+        print_info("Supported formats: md, json")
+        print_info("HTML export is planned for a future release")
+        raise typer.Exit(1)
+    elif format == "pdf":
+        # PDF export not yet implemented
+        print_error("PDF export not yet implemented")
+        print_info("Supported formats: md, json")
+        print_info("PDF export is planned for a future release")
+        raise typer.Exit(1)
     else:
         print_error(f"Unsupported format: {format}")
+        print_info("Supported formats: md, json")
         raise typer.Exit(1)
-    
+
     if output:
         output.write_text(content)
         print_success(f"Exported to {output}")

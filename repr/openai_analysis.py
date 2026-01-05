@@ -22,7 +22,54 @@ DEFAULT_EXTRACTION_MODEL = "openai/gpt-5-nano-2025-08-07"
 DEFAULT_SYNTHESIS_MODEL = "openai/gpt-5.2-2025-12-11"
 EXTRACTION_TEMPERATURE = 0.3
 SYNTHESIS_TEMPERATURE = 0.7
-COMMITS_PER_BATCH = 25
+COMMITS_PER_BATCH = 25  # Default fallback, use config value when possible
+
+
+def estimate_tokens(commits: list[dict[str, Any]]) -> int:
+    """
+    Estimate token count for a list of commits.
+
+    Uses a rough heuristic: ~4 characters per token (GPT tokenization rule of thumb).
+    Includes commit messages, file paths, and diffs.
+
+    Args:
+        commits: List of commits with diffs
+
+    Returns:
+        Estimated token count
+    """
+    total_chars = 0
+
+    for commit in commits:
+        # Count commit message
+        total_chars += len(commit.get('message', ''))
+
+        # Count file information
+        for file_info in commit.get('files', []):
+            total_chars += len(file_info.get('path', ''))
+            if 'diff' in file_info and file_info['diff']:
+                total_chars += len(file_info['diff'])
+
+    # Rule of thumb: ~4 characters per token
+    estimated_tokens = total_chars // 4
+
+    # Add overhead for prompts and formatting (~2000 tokens)
+    return estimated_tokens + 2000
+
+
+def get_batch_size() -> int:
+    """
+    Get batch size from config, with fallback to COMMITS_PER_BATCH constant.
+
+    Returns:
+        Batch size (max commits per batch)
+    """
+    try:
+        from .config import load_config
+        config = load_config()
+        return config.get("generation", {}).get("max_commits_per_batch", COMMITS_PER_BATCH)
+    except Exception:
+        return COMMITS_PER_BATCH
 
 
 def get_openai_client(api_key: str = None, base_url: str = None, verbose: bool = False) -> AsyncOpenAI:
@@ -358,10 +405,11 @@ async def analyze_repo_openai(
             progress=10.0,
         )
     
-    # Split into batches
+    # Split into batches (use config value)
+    batch_size = get_batch_size()
     batches = [
-        commits[i:i + COMMITS_PER_BATCH]
-        for i in range(0, len(commits), COMMITS_PER_BATCH)
+        commits[i:i + batch_size]
+        for i in range(0, len(commits), batch_size)
     ]
     
     total_batches = len(batches)
@@ -369,7 +417,7 @@ async def analyze_repo_openai(
     if progress_callback:
         progress_callback(
             step="Analyzing",
-            detail=f"Processing {total_batches} batches ({COMMITS_PER_BATCH} commits each)",
+            detail=f"Processing {total_batches} batches ({batch_size} commits each)",
             repo=repo.name,
             progress=15.0,
         )

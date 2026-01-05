@@ -5,8 +5,46 @@ A privacy-first CLI that analyzes your git repositories to generate per-repo pro
 [![PyPI version](https://img.shields.io/pypi/v/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build](https://github.com/repr-app/cli/actions/workflows/build-release.yml/badge.svg)](https://github.com/repr-app/cli/actions/workflows/build-release.yml)
+[![Tests](https://github.com/repr-app/cli/actions/workflows/test.yml/badge.svg)](https://github.com/repr-app/cli/actions/workflows/test.yml)
 
 ## Install
+
+### Option 1: Homebrew (macOS/Linux) 🍺
+
+```bash
+brew tap repr-app/tap
+brew install repr
+```
+
+### Option 2: One-Line Installer (macOS/Linux) ⚡
+
+```bash
+curl -sSL https://repr.dev/install.sh | sh
+```
+
+### Option 3: Binary Download (No Python Required) 📦
+
+Download pre-built binaries from the [latest release](https://github.com/repr-app/cli/releases/latest):
+
+**macOS:**
+```bash
+curl -L https://github.com/repr-app/cli/releases/latest/download/repr-macos.tar.gz -o repr-macos.tar.gz
+tar -xzf repr-macos.tar.gz
+sudo mv repr /usr/local/bin/
+```
+
+**Linux:**
+```bash
+curl -L https://github.com/repr-app/cli/releases/latest/download/repr-linux.tar.gz -o repr-linux.tar.gz
+tar -xzf repr-linux.tar.gz
+sudo mv repr /usr/local/bin/
+```
+
+**Windows:**
+Download `repr-windows.exe` from releases, rename to `repr.exe`, and add to your PATH.
+
+### Option 4: Python Package Manager 🐍
 
 Recommended (isolated):
 
