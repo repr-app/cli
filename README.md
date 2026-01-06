@@ -11,9 +11,9 @@ A local-first developer tool that turns your git commit history into professiona
 
 ## Why Repr
 
-- **Local-first by default**: Your repos, diffs, and stories live on your machine in `~/.repr/`.
+- **Local-first by default**: Your repos, diffs, and stories stay on your machine in `~/.repr/`.
 - **Bring your own model**: Use a local LLM (Ollama/LocalAI) or your own API keys (OpenAI/Anthropic/etc.).
-- **Opt-in cloud**: Publishing/sync is optional and always user-initiated.
+- **Opt-in cloud**: Publishing and sync are optional — you decide when data leaves your machine.
 
 ## Install
 
@@ -26,7 +26,7 @@ brew install repr
 
 ### Direct Download
 
-Download pre-built binaries for macOS, Linux, and Windows from the [latest release](https://github.com/repr-app/cli/releases/latest).
+Grab pre-built binaries for macOS, Linux, and Windows from the [latest release](https://github.com/repr-app/cli/releases/latest).
 
 ### Python (pipx)
 
@@ -37,20 +37,20 @@ pipx install repr-cli
 ## Quickstart (60 seconds)
 
 ```bash
-# 1) Scan for repos and set up local config
+# 1) Scan your repos and set up local config
 repr init ~/code
 
 # 2) Generate stories from your recent work (local LLM)
 repr generate --local
 
-# 3) View what was created
+# 3) See what you created
 repr stories
 repr story view <id>
 ```
 
-## Workflows (how people actually use Repr)
+## Common workflows
 
-The full journeys live in `docs/USER_WORKFLOWS.md`. The snippets below are the “happy paths”.
+For full step-by-step guides, see `docs/USER_WORKFLOWS.md`. Below are the quick happy-path snippets.
 
 ### First-time setup
 
@@ -62,7 +62,7 @@ repr generate --local
 
 See: `docs/USER_WORKFLOWS.md#1-first-time-setup-new-user`
 
-### Daily developer workflow
+### Daily workflow
 
 ```bash
 repr hooks install --all
@@ -93,7 +93,7 @@ repr story view <id>
 
 See: `docs/USER_WORKFLOWS.md#4-preparing-for-a-job-interview`
 
-### Publishing your profile (optional)
+### Publish your profile (optional)
 
 ```bash
 repr login
@@ -134,16 +134,16 @@ repr doctor
 
 See: `docs/USER_WORKFLOWS.md#10-troubleshooting--diagnostics`
 
-## Configure models
+## Configure your models
 
-**Config file:** `~/.repr/config.json`
+Your config lives at `~/.repr/config.json`.
 
 ### Local LLM (Ollama/LocalAI)
 
 ```bash
 repr llm configure
 
-# or manually:
+# or set it manually:
 repr config set llm.local_api_url http://localhost:11434/v1
 repr config set llm.local_model llama3.2
 ```
@@ -156,18 +156,18 @@ repr llm add anthropic
 repr llm use byok:openai
 ```
 
-### Privacy modes (mental model)
+### Privacy modes
 
 | Mode | Typical command | What happens |
-|------|------------------|-------------|
+|------|-----------------|--------------|
 | **Local LLM** | `repr generate --local` | Talks only to your local endpoint. |
-| **BYOK** | `repr llm add <provider>` | Direct calls to your provider using your key. |
-| **Cloud** | `repr generate --cloud` | Requires login; user-initiated network calls. |
-| **Offline** | `repr week` / `repr stories` | Local operations only. |
+| **BYOK** | `repr llm add <provider>` | Calls your provider directly with your key. |
+| **Cloud** | `repr generate --cloud` | Requires login; you initiate all network calls. |
+| **Offline** | `repr week` / `repr stories` | Pure local operations. |
 
 ## Command help
 
-If you want the full flag reference:
+For the full flag reference:
 
 ```bash
 repr --help
