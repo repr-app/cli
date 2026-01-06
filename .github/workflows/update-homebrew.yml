@@ -109,18 +109,19 @@ jobs:
             git push origin main
           fi
 
-      - name: Create tap repository dispatch (optional)
+      - name: Trigger homebrew-tap sync
         if: github.event.repository.fork == false
+        env:
+          TAP_REPO_TOKEN: ${{ secrets.TAP_REPO_TOKEN }}
         run: |
-          # If you have a separate homebrew-tap repository, 
-          # this will trigger an update there
-          # Uncomment and configure if needed:
-          #
-          # curl -X POST \
-          #   -H "Authorization: token ${{ secrets.TAP_REPO_TOKEN }}" \
-          #   -H "Accept: application/vnd.github.v3+json" \
-          #   https://api.github.com/repos/repr-app/homebrew-tap/dispatches \
-          #   -d '{"event_type":"formula-update","client_payload":{"version":"${{ steps.release.outputs.version }}"}}'
-          
-          echo "Skipping tap repository dispatch (not configured)"
+          if [ -n "$TAP_REPO_TOKEN" ]; then
+            curl -X POST \
+              -H "Authorization: token $TAP_REPO_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/repr-app/homebrew-tap/dispatches \
+              -d '{"event_type":"formula-update","client_payload":{"version":"${{ steps.release.outputs.version }}"}}'
+            echo "Triggered homebrew-tap sync"
+          else
+            echo "TAP_REPO_TOKEN not configured, skipping tap dispatch"
+          fi
 
