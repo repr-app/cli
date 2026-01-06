@@ -465,7 +465,7 @@ def generate(
         ])
 
 
-def _generate_stories(
+async def _generate_stories_async(
     commits: list[dict],
     repo_info,
     batch_size: int,
@@ -473,7 +473,7 @@ def _generate_stories(
     template: str = "resume",
     custom_prompt: str | None = None,
 ) -> list[dict]:
-    """Generate stories from commits using LLM."""
+    """Generate stories from commits using LLM (async implementation)."""
     from .openai_analysis import get_openai_client, extract_commit_batch
     from .templates import build_generation_prompt
     
@@ -485,80 +485,103 @@ def _generate_stories(
         for i in range(0, len(commits), batch_size)
     ]
     
-    for i, batch in enumerate(batches):
-        try:
-            # Build prompt with template
-            system_prompt, user_prompt = build_generation_prompt(
-                template_name=template,
-                repo_name=repo_info.name,
-                commits=batch,
-                custom_prompt=custom_prompt,
-            )
-            
-            # Get LLM client
-            if local:
-                llm_config = get_llm_config()
-                client = get_openai_client(
-                    api_key=llm_config.get("local_api_key") or "ollama",
-                    base_url=llm_config.get("local_api_url") or "http://localhost:11434/v1",
+    # Create client once, reuse for all batches
+    if local:
+        llm_config = get_llm_config()
+        client = get_openai_client(
+            api_key=llm_config.get("local_api_key") or "ollama",
+            base_url=llm_config.get("local_api_url") or "http://localhost:11434/v1",
+        )
+        model = llm_config.get("local_model") or llm_config.get("extraction_model") or "llama3.2"
+    else:
+        client = get_openai_client()
+        model = None  # Use default
+    
+    try:
+        for i, batch in enumerate(batches):
+            try:
+                # Build prompt with template
+                system_prompt, user_prompt = build_generation_prompt(
+                    template_name=template,
+                    repo_name=repo_info.name,
+                    commits=batch,
+                    custom_prompt=custom_prompt,
                 )
-                model = llm_config.get("local_model") or llm_config.get("extraction_model") or "llama3.2"
-            else:
-                client = get_openai_client()
-                model = None  # Use default
-            
-            # Extract story from batch
-            content = asyncio.run(extract_commit_batch(
-                client=client,
-                commits=batch,
-                batch_num=i + 1,
-                total_batches=len(batches),
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            ))
-            
-            if not content or content.startswith("[Batch"):
-                continue
-            
-            # Extract summary (first non-empty line)
-            lines = [l.strip() for l in content.split("\n") if l.strip()]
-            summary = lines[0][:100] if lines else "Story"
-            # Clean up summary
-            summary = summary.lstrip("#-•* ").strip()
-            
-            # Build metadata
-            commit_shas = [c["full_sha"] for c in batch]
-            first_date = min(c["date"] for c in batch)
-            last_date = max(c["date"] for c in batch)
-            total_files = sum(len(c.get("files", [])) for c in batch)
-            total_adds = sum(c.get("insertions", 0) for c in batch)
-            total_dels = sum(c.get("deletions", 0) for c in batch)
-            
-            metadata = {
-                "summary": summary,
-                "repo_name": repo_info.name,
-                "repo_path": str(repo_info.path),
-                "commit_shas": commit_shas,
-                "first_commit_at": first_date,
-                "last_commit_at": last_date,
-                "files_changed": total_files,
-                "lines_added": total_adds,
-                "lines_removed": total_dels,
-                "generated_locally": local,
-                "template": template,
-                "needs_review": False,
-            }
-            
-            # Save story
-            story_id = save_story(content, metadata)
-            metadata["id"] = story_id
-            stories.append(metadata)
-            
-        except Exception as e:
-            console.print(f"  [{BRAND_MUTED}]Batch {i+1} failed: {e}[/]")
+                
+                # Extract story from batch
+                content = await extract_commit_batch(
+                    client=client,
+                    commits=batch,
+                    batch_num=i + 1,
+                    total_batches=len(batches),
+                    model=model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
+                
+                if not content or content.startswith("[Batch"):
+                    continue
+                
+                # Extract summary (first non-empty line)
+                lines = [l.strip() for l in content.split("\n") if l.strip()]
+                summary = lines[0][:100] if lines else "Story"
+                # Clean up summary
+                summary = summary.lstrip("#-•* ").strip()
+                
+                # Build metadata
+                commit_shas = [c["full_sha"] for c in batch]
+                first_date = min(c["date"] for c in batch)
+                last_date = max(c["date"] for c in batch)
+                total_files = sum(len(c.get("files", [])) for c in batch)
+                total_adds = sum(c.get("insertions", 0) for c in batch)
+                total_dels = sum(c.get("deletions", 0) for c in batch)
+                
+                metadata = {
+                    "summary": summary,
+                    "repo_name": repo_info.name,
+                    "repo_path": str(repo_info.path),
+                    "commit_shas": commit_shas,
+                    "first_commit_at": first_date,
+                    "last_commit_at": last_date,
+                    "files_changed": total_files,
+                    "lines_added": total_adds,
+                    "lines_removed": total_dels,
+                    "generated_locally": local,
+                    "template": template,
+                    "needs_review": False,
+                }
+                
+                # Save story
+                story_id = save_story(content, metadata)
+                metadata["id"] = story_id
+                stories.append(metadata)
+                
+            except Exception as e:
+                console.print(f"  [{BRAND_MUTED}]Batch {i+1} failed: {e}[/]")
+    finally:
+        # Properly close the async client
+        await client.close()
     
     return stories
+
+
+def _generate_stories(
+    commits: list[dict],
+    repo_info,
+    batch_size: int,
+    local: bool,
+    template: str = "resume",
+    custom_prompt: str | None = None,
+) -> list[dict]:
+    """Generate stories from commits using LLM."""
+    return asyncio.run(_generate_stories_async(
+        commits=commits,
+        repo_info=repo_info,
+        batch_size=batch_size,
+        local=local,
+        template=template,
+        custom_prompt=custom_prompt,
+    ))
 
 
 # =============================================================================
