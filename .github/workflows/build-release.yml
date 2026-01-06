@@ -125,7 +125,7 @@ jobs:
             dist/*.exe
           retention-days: 7
 
-  # Optional: Build DEB package for Ubuntu
+  # Build DEB package from PyInstaller binary using fpm
   build-deb:
     name: Build DEB package
     runs-on: ubuntu-latest
@@ -135,27 +135,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          name: repr-linux
+          path: dist
 
-      - name: Install build dependencies
+      - name: Extract binary
+        run: |
+          cd dist
+          tar -xzf repr-linux.tar.gz
+          chmod +x repr
+
+      - name: Install fpm
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev devscripts debhelper build-essential python3-all dh-python
-          python -m pip install --upgrade pip
-          pip install stdeb
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install fpm
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep 'version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build DEB package
         run: |
-          python setup.py --command-packages=stdeb.command bdist_deb
+          fpm -s dir -t deb \
+            -n repr-cli \
+            -v ${{ steps.version.outputs.version }} \
+            --description "A beautiful, privacy-first CLI that analyzes your code repositories and generates a compelling developer profile" \
+            --url "https://repr.dev" \
+            --maintainer "Repr <hello@repr.dev>" \
+            --license "MIT" \
+            --architecture amd64 \
+            --category "devel" \
+            dist/repr=/usr/bin/repr
 
-      - name: Find and rename DEB
-        run: |
-          DEB_FILE=$(find deb_dist -name "*.deb" | head -n 1)
-          cp "$DEB_FILE" repr-cli.deb
+      - name: Rename DEB
+        run: mv repr-cli_*.deb repr-cli.deb
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
