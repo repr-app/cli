@@ -50,7 +50,7 @@ repr story view <id>
 
 ## Common workflows
 
-For full step-by-step guides, see `docs/USER_WORKFLOWS.md`. Below are the quick happy-path snippets.
+For full step-by-step guides, see the [documentation](https://repr.dev/docs/cli/workflows/). Below are the quick happy-path snippets.
 
 ### First-time setup
 
@@ -60,7 +60,7 @@ repr week
 repr generate --local
 ```
 
-See: `docs/USER_WORKFLOWS.md#1-first-time-setup-new-user`
+[Full guide →](https://repr.dev/docs/cli/workflows/first-time-setup)
 
 ### Daily workflow
 
@@ -70,7 +70,7 @@ repr generate --local
 repr review
 ```
 
-See: `docs/USER_WORKFLOWS.md#2-daily-developer-workflow`
+[Full guide →](https://repr.dev/docs/cli/workflows/daily-workflow)
 
 ### Weekly reflection
 
@@ -81,7 +81,7 @@ repr story edit <id>
 repr story feature <id>
 ```
 
-See: `docs/USER_WORKFLOWS.md#3-weekly-reflection`
+[Full guide →](https://repr.dev/docs/cli/workflows/weekly-reflection)
 
 ### Interview prep (STAR stories)
 
@@ -91,7 +91,7 @@ repr stories
 repr story view <id>
 ```
 
-See: `docs/USER_WORKFLOWS.md#4-preparing-for-a-job-interview`
+[Full guide →](https://repr.dev/docs/cli/workflows/interview-prep)
 
 ### Publish your profile (optional)
 
@@ -102,7 +102,7 @@ repr push --all
 repr profile link
 ```
 
-See: `docs/USER_WORKFLOWS.md#5-publishing-your-profile`
+[Full guide →](https://repr.dev/docs/cli/workflows/publishing-profile)
 
 ### Privacy-focused (local only)
 
@@ -113,7 +113,7 @@ repr llm test
 repr generate --local
 ```
 
-See: `docs/USER_WORKFLOWS.md#6-privacy-focused-workflow-local-only`
+[Full guide →](https://repr.dev/docs/cli/workflows/privacy-local-only)
 
 ### Multi-device sync
 
@@ -122,7 +122,7 @@ repr login
 repr sync
 ```
 
-See: `docs/USER_WORKFLOWS.md#7-multi-device-sync`
+[Full guide →](https://repr.dev/docs/cli/workflows/multi-device-sync)
 
 ### Troubleshooting
 
@@ -132,7 +132,7 @@ repr mode
 repr doctor
 ```
 
-See: `docs/USER_WORKFLOWS.md#10-troubleshooting--diagnostics`
+[Full guide →](https://repr.dev/docs/cli/workflows/troubleshooting)
 
 ## Configure your models
 
