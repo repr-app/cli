@@ -30,6 +30,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Inject version into __init__.py
+        run: |
+          VERSION=$(grep 'version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Injecting version $VERSION"
+          sed -i.bak "s/__version__ = \".*\"/__version__ = \"$VERSION\"/" repr/__init__.py
+          cat repr/__init__.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

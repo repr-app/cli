@@ -5,6 +5,11 @@ Analyzes your local git repositories and generates a compelling
 developer profile without ever sending your source code to the cloud.
 """
 
-__version__ = "0.2.5"
+try:
+    from importlib.metadata import version
+    __version__ = version("repr-cli")
+except Exception:
+    # Fallback for PyInstaller builds where metadata isn't available
+    __version__ = "0.2.6"
 __author__ = "Repr"
 __email__ = "hello@repr.dev"
