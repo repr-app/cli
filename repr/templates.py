@@ -162,7 +162,12 @@ def format_commits_for_prompt(commits: list[dict[str, Any]]) -> str:
         
         lines.append(f"- [{sha}] {msg}")
         if files:
-            lines.append(f"  Files: {', '.join(files[:5])}")
+            # Handle files as either list of dicts or list of strings
+            file_names = [
+                f["path"] if isinstance(f, dict) else f
+                for f in files[:5]
+            ]
+            lines.append(f"  Files: {', '.join(file_names)}")
             if len(files) > 5:
                 lines.append(f"  ... and {len(files) - 5} more files")
         if c.get("insertions") or c.get("deletions"):

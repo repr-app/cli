@@ -122,6 +122,8 @@ async def extract_commit_batch(
     batch_num: int,
     total_batches: int,
     model: str = None,
+    system_prompt: str = None,
+    user_prompt: str = None,
 ) -> str:
     """
     Extraction phase: Extract accomplishments from a batch of commits.
@@ -132,6 +134,8 @@ async def extract_commit_batch(
         batch_num: Current batch number (for context)
         total_batches: Total number of batches
         model: Model name to use (defaults to stored config or DEFAULT_EXTRACTION_MODEL)
+        system_prompt: Custom system prompt (optional, uses default if not provided)
+        user_prompt: Custom user prompt (optional, uses default if not provided)
     
     Returns:
         Summary of technical accomplishments in this batch
@@ -139,36 +143,40 @@ async def extract_commit_batch(
     if not model:
         llm_config = get_llm_config()
         model = llm_config.get("extraction_model") or DEFAULT_EXTRACTION_MODEL
-    # Format commits for the prompt
-    commits_text = []
-    for commit in commits:
-        commit_text = f"""
+    
+    # Use provided prompts or build defaults
+    if not system_prompt or not user_prompt:
+        # Format commits for the prompt
+        commits_text = []
+        for commit in commits:
+            commit_text = f"""
 Commit: {commit['sha']}
 Date: {commit['date']}
 Message: {commit['message']}
 
 Files changed:"""
-        
-        for file_info in commit['files'][:10]:  # Limit files per commit
-            change_type = {
-                'A': 'Added',
-                'D': 'Deleted',
-                'M': 'Modified',
-                'R': 'Renamed'
-            }.get(file_info['change_type'], 'Changed')
             
-            commit_text += f"\n  {change_type}: {file_info['path']}"
+            for file_info in commit['files'][:10]:  # Limit files per commit
+                change_type = {
+                    'A': 'Added',
+                    'D': 'Deleted',
+                    'M': 'Modified',
+                    'R': 'Renamed'
+                }.get(file_info['change_type'], 'Changed')
+                
+                commit_text += f"\n  {change_type}: {file_info['path']}"
+                
+                if file_info['diff']:
+                    # Truncate diff if too long (for token management)
+                    diff = file_info['diff'][:2000]
+                    commit_text += f"\n```diff\n{diff}\n```"
             
-            if file_info['diff']:
-                # Truncate diff if too long (for token management)
-                diff = file_info['diff'][:2000]
-                commit_text += f"\n```diff\n{diff}\n```"
+            commits_text.append(commit_text)
         
-        commits_text.append(commit_text)
-    
-    commits_formatted = "\n\n---\n".join(commits_text)
-    
-    system_prompt = """You are analyzing a developer's actual code commits to extract specific technical accomplishments WITH the reasoning behind them.
+        commits_formatted = "\n\n---\n".join(commits_text)
+        
+        if not system_prompt:
+            system_prompt = """You are analyzing a developer's actual code commits to extract specific technical accomplishments WITH the reasoning behind them.
 
 Your job: Read the commit messages and diffs, then list CONCRETE technical accomplishments with SPECIFIC details AND infer WHY those decisions were made.
 
@@ -194,7 +202,8 @@ What NOT to do:
 - Don't include process/methodology unless there's evidence
 - Don't fabricate motivations that aren't supported by the code/commits"""
 
-    user_prompt = f"""Analyze commits batch {batch_num}/{total_batches} and extract technical accomplishments:
+        if not user_prompt:
+            user_prompt = f"""Analyze commits batch {batch_num}/{total_batches} and extract technical accomplishments:
 
 {commits_formatted}
 
