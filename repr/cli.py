@@ -136,6 +136,7 @@ def dev_callback(value: bool):
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False, "--version", "-v",
         callback=version_callback,
@@ -155,6 +156,11 @@ def main(
     """
     # Migrate plaintext auth tokens on startup
     migrate_plaintext_auth()
+    
+    # Track command usage (if telemetry enabled)
+    from .telemetry import track_command
+    if ctx.invoked_subcommand:
+        track_command(ctx.invoked_subcommand)
 
 
 # =============================================================================
@@ -1685,6 +1691,90 @@ def llm_test():
 # =============================================================================
 # PRIVACY
 # =============================================================================
+
+@privacy_app.command("telemetry")
+def privacy_telemetry(
+    action: str = typer.Argument("status", help="Action: status, enable, disable"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Manage anonymous telemetry.
+    
+    Telemetry is disabled by default. When enabled, it sends:
+    - Command names and timestamps
+    - OS type and CLI version
+    - Anonymous device ID (random, not linked to you)
+    
+    It NEVER sends: code, commits, paths, usernames, emails.
+    
+    Examples:
+        repr privacy telemetry              Show telemetry status
+        repr privacy telemetry enable       Opt-in to telemetry
+        repr privacy telemetry disable      Opt-out of telemetry
+    """
+    from .telemetry import (
+        is_telemetry_enabled,
+        enable_telemetry,
+        disable_telemetry,
+        get_queue_stats,
+        get_pending_events,
+    )
+    
+    if action == "status":
+        stats = get_queue_stats()
+        
+        if json_output:
+            print(json.dumps(stats, indent=2))
+            return
+        
+        status = f"[{BRAND_SUCCESS}]enabled[/]" if stats["enabled"] else f"[{BRAND_MUTED}]disabled[/]"
+        console.print(f"[bold]Telemetry[/]: {status}")
+        console.print()
+        
+        if stats["enabled"]:
+            console.print(f"Device ID: {stats['device_id']}")
+            console.print(f"Pending events: {stats['pending_events']}")
+            console.print()
+            
+            # Show pending events for transparency
+            pending = get_pending_events()
+            if pending:
+                console.print("[bold]Pending events:[/]")
+                for event in pending[-5:]:
+                    console.print(f"  • {event.get('event', '')} ({event.get('timestamp', '')[:10]})")
+                if len(pending) > 5:
+                    console.print(f"  [{BRAND_MUTED}]... and {len(pending) - 5} more[/]")
+        else:
+            console.print("Enable with: repr privacy telemetry enable")
+        
+        console.print()
+        console.print(f"[{BRAND_MUTED}]Telemetry helps improve repr. No PII is ever sent.[/]")
+    
+    elif action == "enable":
+        enable_telemetry()
+        print_success("Telemetry enabled")
+        console.print()
+        console.print("What we collect:")
+        console.print("  ✓ Command names and timestamps")
+        console.print("  ✓ OS type and CLI version")
+        console.print("  ✓ Anonymous device ID")
+        console.print()
+        console.print("What we NEVER collect:")
+        console.print("  ✗ Code, commits, diffs")
+        console.print("  ✗ Paths, filenames")
+        console.print("  ✗ Usernames, emails, PII")
+        console.print()
+        console.print(f"[{BRAND_MUTED}]Disable anytime: repr privacy telemetry disable[/]")
+    
+    elif action == "disable":
+        disable_telemetry()
+        print_success("Telemetry disabled")
+        console.print("No data will be collected.")
+    
+    else:
+        print_error(f"Unknown action: {action}")
+        print_info("Valid actions: status, enable, disable")
+
 
 @privacy_app.command("explain")
 def privacy_explain():
