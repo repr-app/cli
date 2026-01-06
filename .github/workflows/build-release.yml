@@ -73,6 +73,7 @@ jobs:
             --hidden-import=repr.templates \
             --hidden-import=repr.tools \
             --hidden-import=repr.ui \
+            --hidden-import=repr.updater \
             --collect-all=typer \
             --collect-all=rich \
             --collect-all=pygments \
@@ -101,6 +102,7 @@ jobs:
             --hidden-import=repr.templates `
             --hidden-import=repr.tools `
             --hidden-import=repr.ui `
+            --hidden-import=repr.updater `
             --collect-all=typer `
             --collect-all=rich `
             --collect-all=pygments `

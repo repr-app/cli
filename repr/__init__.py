@@ -10,6 +10,6 @@ try:
     __version__ = version("repr-cli")
 except Exception:
     # Fallback for PyInstaller builds where metadata isn't available
-    __version__ = "0.2.7"
+    __version__ = "0.2.8"
 __author__ = "Repr"
 __email__ = "hello@repr.dev"

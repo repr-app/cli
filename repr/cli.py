@@ -2383,6 +2383,34 @@ def mode():
 
 
 @app.command()
+def update(
+    check: bool = typer.Option(False, "--check", "-c", help="Only check for updates, don't install"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force update even if already up to date"),
+):
+    """
+    Update repr to the latest version.
+    
+    Automatically detects installation method (Homebrew, pip, or binary)
+    and updates accordingly.
+    
+    Examples:
+        repr update           # Update to latest version
+        repr update --check   # Just check if update available
+    """
+    from .updater import check_for_update, perform_update
+    
+    if check:
+        new_version = check_for_update()
+        if new_version:
+            print_info(f"New version available: v{new_version}")
+            print_info("Run 'repr update' to install")
+        else:
+            print_success(f"Already up to date (v{__version__})")
+    else:
+        perform_update(force=force)
+
+
+@app.command()
 def doctor():
     """
     Health check and diagnostics.
