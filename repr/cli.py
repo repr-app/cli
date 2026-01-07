@@ -21,7 +21,8 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
+from collections import defaultdict
 
 import typer
 from rich.prompt import Confirm, Prompt
@@ -721,24 +722,37 @@ def stories(
     
     console.print(f"[bold]Stories[/] ({len(story_list)} total)")
     console.print()
-    
+
+    # Group stories by repository
+    by_repo = defaultdict(list)
     for story in story_list[:20]:
-        # Status indicator
-        if story.get("needs_review"):
-            status = f"[{BRAND_WARNING}]⚠[/]"
-        elif story.get("pushed_at"):
-            status = f"[{BRAND_SUCCESS}]✓[/]"
-        else:
-            status = f"[{BRAND_MUTED}]○[/]"
-        
-        summary = story.get("summary", "Untitled")[:60]
-        repo_name = story.get("repo_name", "unknown")
-        created = format_relative_time(story.get("created_at", ""))
-        
-        console.print(f"{status} {summary}")
-        console.print(f"  [{BRAND_MUTED}]{repo_name} • {created}[/]")
-        console.print()
+        r_name = story.get("repo_name", "unknown")
+        by_repo[r_name].append(story)
     
+    # Sort repositories by their most recent story
+    sorted_repos = sorted(
+        by_repo.keys(),
+        key=lambda r: max(s.get("created_at", "") for s in by_repo[r]),
+        reverse=True
+    )
+
+    for repo_name in sorted_repos:
+        console.print(f"[bold]{repo_name}[/]")
+        for story in by_repo[repo_name]:
+            # Status indicator
+            if story.get("needs_review"):
+                status = f"[{BRAND_WARNING}]⚠[/]"
+            elif story.get("pushed_at"):
+                status = f"[{BRAND_SUCCESS}]✓[/]"
+            else:
+                status = f"[{BRAND_MUTED}]○[/]"
+            
+            summary = story.get("summary", "Untitled")
+            created = format_relative_time(story.get("created_at", ""))
+            
+            console.print(f"  {status} {summary} [{BRAND_MUTED}]• {created}[/]")
+        console.print()
+
     if len(story_list) > 20:
         console.print(f"[{BRAND_MUTED}]... and {len(story_list) - 20} more[/]")
 
