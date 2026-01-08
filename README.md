@@ -14,7 +14,7 @@ Turn commits into professional narratives for interviews, performance reviews, a
 > *"I used repr to prep for my Meta interview in 30 minutes. Turned 2 years of commits into 8 STAR-format stories. Nailed every behavioral question."*  
 > **— Sarah, Senior Backend Engineer**
 
-> *"Our sprint demos went from chaos to polished in 5 minutes. Just run `repr since '2 weeks ago'` and export. Stakeholders love it."*  
+> *"Our sprint demos went from chaos to polished in 5 minutes. Just run `repr commits --days 14` and export. Stakeholders love it."*  
 > **— Marcus, Engineering Manager**
 
 > *"I run repr in a fully air-gapped environment. Zero network calls, 100% local. It's the only tool I trust for this."*  
@@ -110,7 +110,7 @@ For full step-by-step guides, see the [documentation](https://repr.dev/docs/cli/
 
 ```bash
 repr init ~/code
-repr week
+repr commits --days 7
 repr generate --local
 ```
 
@@ -129,7 +129,7 @@ repr review
 ### Weekly reflection
 
 ```bash
-repr week
+repr commits --days 7
 repr generate --local
 repr story edit <id>
 repr story feature <id>
@@ -146,6 +146,20 @@ repr story view <id>
 ```
 
 [Full guide →](https://repr.dev/docs/cli/workflows/interview-prep)
+
+### Generate from a specific timeframe
+
+```bash
+# Last 30 days
+repr generate --days 30 --local
+
+# Since a specific date
+repr generate --since 2024-01-01 --local
+
+# Natural language dates
+repr generate --since "2 weeks ago" --local
+repr generate --since monday --local
+```
 
 ### Publish your profile (optional)
 
@@ -217,7 +231,7 @@ repr llm use byok:openai
 | **Local LLM** | `repr generate --local` | Talks only to your local endpoint. |
 | **BYOK** | `repr llm add <provider>` | Calls your provider directly with your key. |
 | **Cloud** | `repr generate --cloud` | Requires login; you initiate all network calls. |
-| **Offline** | `repr week` / `repr stories` | Pure local operations. |
+| **Offline** | `repr commits` / `repr stories` | Pure local operations. |
 
 ## Command help
 

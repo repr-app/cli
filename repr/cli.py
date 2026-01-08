@@ -248,6 +248,81 @@ def init(
 # GENERATE
 # =============================================================================
 
+def _parse_date_reference(date_str: str) -> str | None:
+    """
+    Parse a date reference string into an ISO date string.
+    
+    Supports:
+    - ISO dates: "2024-01-01"
+    - Day names: "monday", "tuesday", etc.
+    - Relative: "3 days ago", "2 weeks ago", "1 month ago"
+    
+    Returns ISO date string or None if parsing fails.
+    """
+    import re
+    from datetime import datetime, timedelta
+    
+    date_str = date_str.lower().strip()
+    
+    # Try ISO format first
+    try:
+        parsed = datetime.fromisoformat(date_str)
+        return parsed.isoformat()
+    except ValueError:
+        pass
+    
+    # Day names (find previous occurrence)
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    if date_str in day_names:
+        today = datetime.now()
+        target_day = day_names.index(date_str)
+        current_day = today.weekday()
+        
+        # Calculate days back to that day
+        days_back = (current_day - target_day) % 7
+        if days_back == 0:
+            days_back = 7  # Go to last week's occurrence
+        
+        target_date = today - timedelta(days=days_back)
+        return target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    
+    # Relative time: "N days/weeks/months ago"
+    match = re.match(r"(\d+)\s+(day|days|week|weeks|month|months)\s+ago", date_str)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).rstrip("s")  # Normalize to singular
+        
+        if unit == "day":
+            delta = timedelta(days=amount)
+        elif unit == "week":
+            delta = timedelta(weeks=amount)
+        elif unit == "month":
+            delta = timedelta(days=amount * 30)  # Approximate
+        else:
+            return None
+        
+        target_date = datetime.now() - delta
+        return target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    
+    # "yesterday" / "today"
+    if date_str == "yesterday":
+        target_date = datetime.now() - timedelta(days=1)
+        return target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    if date_str == "today":
+        target_date = datetime.now()
+        return target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    
+    # "last week" / "last month"
+    if date_str == "last week":
+        target_date = datetime.now() - timedelta(weeks=1)
+        return target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    if date_str == "last month":
+        target_date = datetime.now() - timedelta(days=30)
+        return target_date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    
+    return None
+
+
 @app.command()
 def generate(
     local: bool = typer.Option(
@@ -268,6 +343,14 @@ def generate(
         None, "--commits",
         help="Generate from specific commits (comma-separated)",
     ),
+    since_date: Optional[str] = typer.Option(
+        None, "--since",
+        help="Generate from commits since date (e.g., '2024-01-01', 'monday', '2 weeks ago')",
+    ),
+    days: Optional[int] = typer.Option(
+        None, "--days",
+        help="Generate from commits in the last N days",
+    ),
     batch_size: int = typer.Option(
         5, "--batch-size",
         help="Commits per story",
@@ -284,6 +367,10 @@ def generate(
         None, "--prompt", "-p",
         help="Custom prompt to append",
     ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
 ):
     """
     Generate stories from commits.
@@ -291,6 +378,8 @@ def generate(
     Examples:
         repr generate --local
         repr generate --cloud
+        repr generate --since "2 weeks ago"
+        repr generate --days 30
         repr generate --template changelog
         repr generate --commits abc123,def456
     """
@@ -300,6 +389,9 @@ def generate(
     if cloud:
         allowed, reason = check_cloud_permission("cloud_generation")
         if not allowed:
+            if json_output:
+                print(json.dumps({"generated": 0, "stories": [], "error": f"Cloud generation blocked: {reason}"}, indent=2))
+                raise typer.Exit(1)
             print_error("Cloud generation blocked")
             print_info(reason)
             console.print()
@@ -314,11 +406,24 @@ def generate(
         else:
             local = True
     
-    print_header()
+    if not json_output:
+        print_header()
     
     mode_str = "local LLM" if local else "cloud LLM"
-    console.print(f"Generating stories ({mode_str})...")
-    console.print()
+    
+    # Build timeframe string for display
+    if commits:
+        timeframe_str = f"specific commits"
+    elif since_date:
+        timeframe_str = f"since {since_date}"
+    elif days:
+        timeframe_str = f"last {days} days"
+    else:
+        timeframe_str = "last 90 days"
+    
+    if not json_output:
+        console.print(f"Generating stories ({mode_str}, {timeframe_str})...")
+        console.print()
     
     # Get repos to analyze
     if repo:
@@ -326,12 +431,18 @@ def generate(
     else:
         tracked = get_tracked_repos()
         if not tracked:
+            if json_output:
+                print(json.dumps({"generated": 0, "stories": [], "error": "No repositories tracked"}, indent=2))
+                raise typer.Exit(1)
             print_warning("No repositories tracked.")
             print_info("Run `repr init` or `repr repos add <path>` first.")
             raise typer.Exit(1)
         repo_paths = [Path(r["path"]) for r in tracked if Path(r["path"]).exists()]
     
     if not repo_paths:
+        if json_output:
+            print(json.dumps({"generated": 0, "stories": [], "error": "No valid repositories found"}, indent=2))
+            raise typer.Exit(1)
         print_error("No valid repositories found")
         raise typer.Exit(1)
     
@@ -340,21 +451,37 @@ def generate(
     from .discovery import analyze_repo
     
     total_stories = 0
+    all_stories = []  # Collect all generated stories for JSON output
     
     for repo_path in repo_paths:
         repo_info = analyze_repo(repo_path)
-        console.print(f"[bold]{repo_info.name}[/]")
+        if not json_output:
+            console.print(f"[bold]{repo_info.name}[/]")
         
         if commits:
             # Specific commits
             commit_shas = [s.strip() for s in commits.split(",")]
             commit_list = get_commits_by_shas(repo_path, commit_shas)
         else:
-            # Recent commits
-            commit_list = get_commits_with_diffs(repo_path, count=50, days=90)
+            # Determine timeframe
+            timeframe_days = days if days is not None else 90  # Default 90 days
+            since_str = None
+            
+            # Parse natural language date if provided
+            if since_date:
+                since_str = _parse_date_reference(since_date)
+            
+            # Recent commits within timeframe
+            commit_list = get_commits_with_diffs(
+                repo_path, 
+                count=500,  # Higher limit when filtering by time
+                days=timeframe_days,
+                since=since_str,
+            )
         
         if not commit_list:
-            console.print(f"  [{BRAND_MUTED}]No commits found[/]")
+            if not json_output:
+                console.print(f"  [{BRAND_MUTED}]No commits found[/]")
             continue
         
         # Dry run: show what would be sent
@@ -435,8 +562,10 @@ def generate(
         )
         
         for story in stories:
-            console.print(f"  • {story['summary']}")
+            if not json_output:
+                console.print(f"  • {story['summary']}")
             total_stories += 1
+            all_stories.append(story)
         
         # Log cloud operation if using cloud
         if cloud and stories:
@@ -451,7 +580,12 @@ def generate(
                 bytes_sent=len(str(commit_list)) // 2,  # Rough estimate
             )
         
-        console.print()
+        if not json_output:
+            console.print()
+    
+    if json_output:
+        print(json.dumps({"generated": total_stories, "stories": all_stories}, indent=2, default=str))
+        return
     
     if dry_run:
         console.print()
@@ -583,112 +717,6 @@ def _generate_stories(
         template=template,
         custom_prompt=custom_prompt,
     ))
-
-
-# =============================================================================
-# QUICK REFLECTION COMMANDS
-# =============================================================================
-
-@app.command()
-def week(
-    save: bool = typer.Option(
-        False, "--save",
-        help="Save as a permanent story",
-    ),
-):
-    """
-    Show what you worked on this week.
-    
-    Example:
-        repr week
-        repr week --save
-    """
-    _show_summary_since("this week", days=7, save=save)
-
-
-@app.command()
-def since(
-    date: str = typer.Argument(..., help="Date or time reference (e.g., 'monday', '2026-01-01', '3 days ago')"),
-    save: bool = typer.Option(
-        False, "--save",
-        help="Save as a permanent story",
-    ),
-):
-    """
-    Show work since a specific date or time.
-    
-    Examples:
-        repr since monday
-        repr since "3 days ago"
-        repr since 2026-01-01
-    """
-    _show_summary_since(date, save=save)
-
-
-@app.command()
-def standup(
-    days: int = typer.Option(
-        3, "--days",
-        help="Number of days to look back",
-    ),
-):
-    """
-    Quick summary for daily standup (last 3 days).
-    
-    Example:
-        repr standup
-        repr standup --days 5
-    """
-    _show_summary_since(f"last {days} days", days=days, save=False)
-
-
-def _show_summary_since(label: str, days: int = None, save: bool = False):
-    """Show summary of work since a date."""
-    from .tools import get_commits_with_diffs
-    from .discovery import analyze_repo
-    
-    print_header()
-    
-    tracked = get_tracked_repos()
-    if not tracked:
-        print_warning("No repositories tracked.")
-        print_info("Run `repr init` first.")
-        raise typer.Exit(1)
-    
-    console.print(f"📊 Work since {label}")
-    console.print()
-    
-    total_commits = 0
-    all_summaries = []
-    
-    for repo_info in tracked:
-        repo_path = Path(repo_info["path"])
-        if not repo_path.exists():
-            continue
-        
-        commits = get_commits_with_diffs(repo_path, count=100, days=days or 30)
-        if not commits:
-            continue
-        
-        repo_name = repo_path.name
-        console.print(f"[bold]{repo_name}[/] ({len(commits)} commits):")
-        
-        # Group commits by rough topic (simple heuristic)
-        for c in commits[:5]:
-            msg = c["message"].split("\n")[0][:60]
-            console.print(f"  • {msg}")
-        
-        if len(commits) > 5:
-            console.print(f"  [{BRAND_MUTED}]... and {len(commits) - 5} more[/]")
-        
-        total_commits += len(commits)
-        console.print()
-    
-    console.print(f"Total: {total_commits} commits")
-    
-    if not save:
-        console.print()
-        console.print(f"[{BRAND_MUTED}]This summary wasn't saved. Run with --save to create a story.[/]")
 
 
 # =============================================================================
@@ -1062,15 +1090,20 @@ def pull():
 def list_commits(
     repo: Optional[str] = typer.Option(None, "--repo", help="Filter by repo name"),
     limit: int = typer.Option(50, "--limit", "-n", help="Number of commits"),
-    since: Optional[str] = typer.Option(None, "--since", help="Since date"),
+    days: Optional[int] = typer.Option(None, "--days", "-d", help="Show commits from last N days (e.g., 7 for week, 3 for standup)"),
+    since: Optional[str] = typer.Option(None, "--since", help="Since date (e.g., '2024-01-01', 'monday', '2 weeks ago')"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """
     List recent commits across all tracked repos.
     
-    Example:
+    Examples:
         repr commits --limit 10
         repr commits --repo myproject
+        repr commits --days 7           # Last week
+        repr commits --days 3           # For standup
+        repr commits --since monday
+        repr commits --since "2 weeks ago"
     """
     from .tools import get_commits_with_diffs
     
@@ -1078,6 +1111,18 @@ def list_commits(
     if not tracked:
         print_warning("No repositories tracked.")
         raise typer.Exit(1)
+    
+    # Determine days filter
+    filter_days = days if days is not None else 90
+    
+    # Parse natural language date if --since provided
+    since_str = None
+    if since:
+        since_str = _parse_date_reference(since)
+        if not since_str:
+            print_error(f"Could not parse date: {since}")
+            print_info("Try: '2024-01-01', 'monday', '3 days ago', 'last week'")
+            raise typer.Exit(1)
     
     all_commits = []
     
@@ -1088,7 +1133,7 @@ def list_commits(
         if not repo_path.exists():
             continue
         
-        commits = get_commits_with_diffs(repo_path, count=limit, days=90)
+        commits = get_commits_with_diffs(repo_path, count=limit, days=filter_days, since=since_str)
         for c in commits:
             c["repo_name"] = repo_path.name
         all_commits.extend(commits)
@@ -1105,7 +1150,15 @@ def list_commits(
         print_info("No commits found")
         raise typer.Exit()
     
-    console.print(f"[bold]Recent Commits[/] ({len(all_commits)})")
+    # Build label for display
+    if days:
+        label = f"last {days} days"
+    elif since:
+        label = f"since {since}"
+    else:
+        label = "recent"
+    
+    console.print(f"[bold]Commits ({label})[/] — {len(all_commits)} total")
     console.print()
     
     current_repo = None
@@ -2368,22 +2421,64 @@ def status(
 
 
 @app.command()
-def mode():
+def mode(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """
     Show current execution mode and settings.
-    
+
     Example:
         repr mode
+        repr mode --json
     """
     from .llm import get_llm_status
-    
+
     authenticated = is_authenticated()
     privacy = get_privacy_settings()
     llm_status = get_llm_status()
-    
+
+    # Determine mode
+    if privacy.get("lock_local_only"):
+        if privacy.get("lock_permanent"):
+            mode = "LOCAL-ONLY"
+            locked = True
+        else:
+            mode = "LOCAL-ONLY"
+            locked = True
+    elif authenticated:
+        mode = "CLOUD"
+        locked = False
+    else:
+        mode = "LOCAL-ONLY"
+        locked = False
+
+    # Build LLM provider string
+    if llm_status["local"]["available"]:
+        llm_provider = f"{llm_status['local']['name']} ({llm_status['local']['model']})"
+    else:
+        llm_provider = "none"
+
+    # Check cloud allowed
+    cloud_allowed = authenticated and is_cloud_allowed()
+
+    if json_output:
+        import json
+        output = {
+            "mode": mode,
+            "locked": locked,
+            "llm_provider": llm_provider,
+            "network_policy": "cloud-enabled" if authenticated else "local-only",
+            "authenticated": authenticated,
+            "cloud_generation_available": cloud_allowed,
+            "sync_available": cloud_allowed,
+            "publishing_available": cloud_allowed,
+        }
+        print(json.dumps(output, indent=2))
+        return
+
     console.print("[bold]Mode[/]")
     console.print()
-    
+
     if privacy.get("lock_local_only"):
         if privacy.get("lock_permanent"):
             console.print("Data boundary: local only (permanently locked)")
@@ -2393,22 +2488,22 @@ def mode():
         console.print("Data boundary: cloud-enabled")
     else:
         console.print("Data boundary: local only")
-    
+
     console.print(f"Default inference: {llm_status['default_mode']}")
-    
+
     console.print()
-    
+
     # LLM info
     if llm_status["local"]["available"]:
         console.print(f"Local LLM: {llm_status['local']['name']} ({llm_status['local']['model']})")
     else:
         console.print(f"[{BRAND_MUTED}]Local LLM: not detected[/]")
-    
+
     console.print()
-    
+
     console.print("Available:")
     console.print(f"  [{BRAND_SUCCESS}]✓[/] Local generation")
-    if authenticated and is_cloud_allowed():
+    if cloud_allowed:
         console.print(f"  [{BRAND_SUCCESS}]✓[/] Cloud generation")
         console.print(f"  [{BRAND_SUCCESS}]✓[/] Sync")
         console.print(f"  [{BRAND_SUCCESS}]✓[/] Publishing")

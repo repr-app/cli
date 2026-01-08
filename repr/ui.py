@@ -143,3 +143,40 @@ def confirm(message: str, default: bool = False) -> bool:
     """Prompt for confirmation."""
     return Confirm.ask(message, default=default)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
