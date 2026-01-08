@@ -3,6 +3,11 @@ name: Update Homebrew Formula
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.2.9)'
+        required: true
 
 permissions:
   contents: write
@@ -16,14 +21,22 @@ jobs:
       - name: Checkout cli repository
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Get release info
         id: release
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Get version from the release tag or manual input
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_NAME="${{ github.event.inputs.tag }}"
+          else
+            TAG_NAME="${{ github.event.release.tag_name }}"
+          fi
+          VERSION="${TAG_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION, tag: $TAG_NAME"
 
       - name: Download release assets
         run: |
