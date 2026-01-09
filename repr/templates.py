@@ -9,103 +9,107 @@ Provides different prompts for generating stories based on use case:
 """
 
 from typing import Any
+from pydantic import BaseModel, Field
+
+
+class StoryOutput(BaseModel):
+    """Structured output for a generated story."""
+    summary: str = Field(description="One-line technical summary of the work (max 120 chars, no fluff)")
+    content: str = Field(description="Full technical description in markdown")
 
 
 # Template definitions
 TEMPLATES = {
     "resume": {
         "name": "Resume",
-        "description": "Professional accomplishment summaries for resumes and portfolios",
-        "system_prompt": """You are helping a developer document their work accomplishments for a professional resume or portfolio.
+        "description": "Technical work log for resumes and portfolios",
+        "system_prompt": """Extract technical work from commits. Be direct and specific.
 
-Focus on:
-- Quantifiable impact where possible (performance improvements, user metrics, etc.)
-- Technical complexity and problem-solving
-- Leadership and collaboration
-- Technologies and skills demonstrated
+Output JSON with:
+- summary: One line, max 120 chars. State what was done technically. No adjectives, no fluff.
+  Good: "Added JWT refresh token rotation with Redis session store"
+  Bad: "Enhanced authentication system with improved security"
+- content: Markdown with technical details. What was built, how, what tech.
 
-Write in first person, using action verbs. Keep it concise and impactful.
-Format: 2-3 bullet points per accomplishment, each 1-2 sentences.""",
-        "user_prompt_template": """Based on these commits, write professional accomplishment summaries:
+Rules:
+- Name specific technologies, libraries, patterns
+- Describe the implementation, not the benefit
+- No marketing language (enhanced, streamlined, robust, seamless)
+- No resume verbs (spearheaded, leveraged, drove)
+- If there's a metric, include it. If not, don't invent one.""",
+        "user_prompt_template": """Repository: {repo_name}
 
-Repository: {repo_name}
 Commits:
 {commits_summary}
 
-Generate 1-3 accomplishment summaries suitable for a resume.""",
+Output JSON with summary and content.""",
     },
     
     "changelog": {
         "name": "Changelog",
         "description": "Technical change documentation for release notes",
-        "system_prompt": """You are writing technical changelog entries for a software project.
+        "system_prompt": """Extract changes from commits for a changelog. Be specific.
 
-Focus on:
-- What changed (features, fixes, improvements)
-- Why it matters (user impact, developer experience)
-- Breaking changes or migration notes
-- Technical details relevant to other developers
+Output JSON with:
+- summary: One line describing the main change (max 120 chars)
+- content: Markdown changelog with categories (Added/Changed/Fixed/Removed)
 
-Use conventional changelog format with categories:
-- Added: New features
-- Changed: Changes to existing functionality
-- Fixed: Bug fixes
-- Removed: Removed features
-- Security: Security improvements""",
-        "user_prompt_template": """Generate changelog entries from these commits:
+Rules:
+- List actual changes, not benefits
+- Include file/module names when relevant
+- No fluff words (improved, enhanced, better)""",
+        "user_prompt_template": """Repository: {repo_name}
 
-Repository: {repo_name}
 Commits:
 {commits_summary}
 
-Write changelog entries grouped by category.""",
+Output JSON with summary and content.""",
     },
     
     "narrative": {
         "name": "Narrative",
-        "description": "Storytelling format for blogs or case studies",
-        "system_prompt": """You are helping a developer tell the story of their work in an engaging narrative format.
+        "description": "Technical narrative for blogs or case studies",
+        "system_prompt": """Write a technical narrative from commits.
+
+Output JSON with:
+- summary: One-line description of what was built (max 120 chars)
+- content: Markdown narrative explaining the technical work
 
 Focus on:
-- The challenge or problem being solved
-- The approach and decision-making process
-- Obstacles encountered and how they were overcome
-- Results and lessons learned
+- What problem was solved
+- How it was implemented technically
+- What decisions were made and why
 
-Write in a conversational, engaging tone suitable for a blog post or case study.
-Use present tense for engagement. Include technical details but make it accessible.""",
-        "user_prompt_template": """Tell the story of this development work:
+No marketing language. Write like you're explaining to another engineer.""",
+        "user_prompt_template": """Repository: {repo_name}
 
-Repository: {repo_name}
 Commits:
 {commits_summary}
 
-Write a narrative (2-3 paragraphs) that would work as a blog post section.""",
+Output JSON with summary and content.""",
     },
     
     "interview": {
         "name": "Interview Prep",
-        "description": "Behavioral interview preparation with STAR format",
-        "system_prompt": """You are helping a developer prepare for behavioral interviews using the STAR method.
+        "description": "Technical interview preparation",
+        "system_prompt": """Extract technical work for interview prep.
 
-Format each accomplishment as:
-- Situation: Context and background
-- Task: What needed to be done
-- Action: What you did specifically
-- Result: The outcome and impact
+Output JSON with:
+- summary: One-line technical summary (max 120 chars)
+- content: Markdown with situation/task/action/result format
 
 Focus on:
-- Technical decision-making
-- Problem-solving approach
-- Collaboration and communication
-- Quantifiable results""",
-        "user_prompt_template": """Create interview-ready stories from these commits:
+- Specific technical decisions made
+- Problems encountered and solutions
+- Technologies and patterns used
 
-Repository: {repo_name}
+No resume language. Be specific about what you actually did.""",
+        "user_prompt_template": """Repository: {repo_name}
+
 Commits:
 {commits_summary}
 
-Generate 1-2 STAR-format stories for behavioral interviews.""",
+Output JSON with summary and content.""",
     },
 }
 

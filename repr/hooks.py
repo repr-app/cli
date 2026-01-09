@@ -423,6 +423,8 @@ def queue_commit(repo_path: Path, commit_sha: str, message: str | None = None) -
     """Add a commit to the queue.
     
     Uses file locking to handle concurrent commits safely.
+    If auto_generate_on_hook is enabled and queue size meets batch_size,
+    triggers background story generation.
     
     Args:
         repo_path: Path to repository root
@@ -434,6 +436,8 @@ def queue_commit(repo_path: Path, commit_sha: str, message: str | None = None) -
     """
     queue_path = get_queue_path(repo_path)
     lock_path = queue_path.with_suffix(".lock")
+    
+    queue_size = 0
     
     try:
         fd = _acquire_lock(lock_path)
@@ -452,7 +456,7 @@ def queue_commit(repo_path: Path, commit_sha: str, message: str | None = None) -
             })
             
             save_queue(repo_path, queue)
-            return True
+            queue_size = len(queue)
             
         finally:
             _release_lock(fd)
@@ -460,6 +464,100 @@ def queue_commit(repo_path: Path, commit_sha: str, message: str | None = None) -
     except QueueLockError:
         # Could not get lock, skip queuing
         return False
+    
+    # Check if we should auto-generate stories
+    _maybe_auto_generate(repo_path, queue_size)
+    
+    return True
+
+
+def _maybe_auto_generate(repo_path: Path, queue_size: int) -> None:
+    """Check if auto-generation should be triggered and spawn background process.
+    
+    Args:
+        repo_path: Path to repository root
+        queue_size: Current number of commits in queue
+    """
+    from .config import load_config
+    
+    config = load_config()
+    generation_config = config.get("generation", {})
+    
+    # Check if auto-generation is enabled
+    if not generation_config.get("auto_generate_on_hook", False):
+        return
+    
+    batch_size = generation_config.get("batch_size", 5)
+    
+    # Only trigger if queue size meets batch threshold
+    if queue_size < batch_size:
+        return
+    
+    # Spawn background generation process
+    _spawn_background_generate(repo_path)
+
+
+def _spawn_background_generate(repo_path: Path) -> None:
+    """Spawn a background process to generate stories for a repo.
+    
+    Uses subprocess.Popen with detached process to not block the git hook.
+    Logs to ~/.repr/logs/auto_generate.log
+    
+    Args:
+        repo_path: Path to repository to generate stories for
+    """
+    import subprocess
+    import sys
+    from .config import REPR_HOME
+    
+    # Ensure log directory exists
+    log_dir = REPR_HOME / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "auto_generate.log"
+    
+    # Build command - use sys.executable to find repr command
+    # repr generate --repo <path> --local --json
+    cmd = [
+        sys.executable, "-m", "repr",
+        "generate",
+        "--repo", str(repo_path),
+        "--local",  # Always use local LLM for auto-generation
+        "--json",
+    ]
+    
+    try:
+        # Open log file for appending
+        with open(log_file, "a") as log:
+            log.write(f"\n[{datetime.now().isoformat()}] Auto-generating for {repo_path}\n")
+            log.flush()
+            
+            # Spawn detached background process
+            # On Unix, use start_new_session=True to fully detach
+            # On Windows, use DETACHED_PROCESS flag
+            if sys.platform == "win32":
+                DETACHED_PROCESS = 0x00000008
+                subprocess.Popen(
+                    cmd,
+                    stdout=log,
+                    stderr=log,
+                    creationflags=DETACHED_PROCESS,
+                    close_fds=True,
+                )
+            else:
+                subprocess.Popen(
+                    cmd,
+                    stdout=log,
+                    stderr=log,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+    except Exception as e:
+        # Silently fail - don't block the git commit
+        try:
+            with open(log_file, "a") as log:
+                log.write(f"[{datetime.now().isoformat()}] Error spawning auto-generate: {e}\n")
+        except Exception:
+            pass
 
 
 def dequeue_commits(repo_path: Path, commit_shas: list[str]) -> int:
