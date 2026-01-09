@@ -655,10 +655,12 @@ async def _generate_stories_async(
                     structured=True,
                 )
                 
-                # Handle structured output
-                if isinstance(result, StoryOutput):
-                    summary = result.summary
-                    content = result.content
+                # Handle structured output - now returns list[StoryOutput]
+                story_outputs: list[StoryOutput] = []
+                if isinstance(result, list):
+                    story_outputs = result
+                elif isinstance(result, StoryOutput):
+                    story_outputs = [result]
                 else:
                     # Fallback for string response
                     content = result
@@ -667,37 +669,43 @@ async def _generate_stories_async(
                     lines = [l.strip() for l in content.split("\n") if l.strip()]
                     summary = lines[0] if lines else "Story"
                     summary = summary.lstrip("#-•* ").strip()
-                
-                if not content or content.startswith("[Batch"):
-                    continue
-                
-                # Build metadata
+                    story_outputs = [StoryOutput(summary=summary, content=content)]
+
+                # Build shared metadata for all stories from this batch
                 commit_shas = [c["full_sha"] for c in batch]
                 first_date = min(c["date"] for c in batch)
                 last_date = max(c["date"] for c in batch)
                 total_files = sum(len(c.get("files", [])) for c in batch)
                 total_adds = sum(c.get("insertions", 0) for c in batch)
                 total_dels = sum(c.get("deletions", 0) for c in batch)
-                
-                metadata = {
-                    "summary": summary,
-                    "repo_name": repo_info.name,
-                    "repo_path": str(repo_info.path),
-                    "commit_shas": commit_shas,
-                    "first_commit_at": first_date,
-                    "last_commit_at": last_date,
-                    "files_changed": total_files,
-                    "lines_added": total_adds,
-                    "lines_removed": total_dels,
-                    "generated_locally": local,
-                    "template": template,
-                    "needs_review": False,
-                }
-                
-                # Save story
-                story_id = save_story(content, metadata)
-                metadata["id"] = story_id
-                stories.append(metadata)
+
+                # Save each story from this batch
+                for story_output in story_outputs:
+                    content = story_output.content
+                    summary = story_output.summary
+
+                    if not content or content.startswith("[Batch"):
+                        continue
+
+                    metadata = {
+                        "summary": summary,
+                        "repo_name": repo_info.name,
+                        "repo_path": str(repo_info.path),
+                        "commit_shas": commit_shas,
+                        "first_commit_at": first_date,
+                        "last_commit_at": last_date,
+                        "files_changed": total_files,
+                        "lines_added": total_adds,
+                        "lines_removed": total_dels,
+                        "generated_locally": local,
+                        "template": template,
+                        "needs_review": False,
+                    }
+
+                    # Save story
+                    story_id = save_story(content, metadata)
+                    metadata["id"] = story_id
+                    stories.append(metadata)
                 
             except Exception as e:
                 console.print(f"  [{BRAND_MUTED}]Batch {i+1} failed: {e}[/]")

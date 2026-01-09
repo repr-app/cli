@@ -11,10 +11,23 @@ import asyncio
 from typing import Any
 
 from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
 
 from .tools import get_commits_with_diffs
 from .discovery import RepoInfo
 from .config import get_litellm_config, get_llm_config, get_api_base
+from .templates import StoryOutput
+
+
+class ExtractedStory(BaseModel):
+    """A single coherent block of work."""
+    title: str = Field(description="One-line title, max 120 chars. Dev jargon welcome. e.g. 'Wire up Redis caching for auth tokens'")
+    summary: str = Field(description="Markdown - what was built, how it works, why it matters")
+
+
+class ExtractedCommitBatch(BaseModel):
+    """Schema for extraction phase output - one or more stories from a batch of commits."""
+    stories: list[ExtractedStory] = Field(description="List of distinct blocks of work found in the commits")
 
 
 # Model configuration (defaults for OpenAI)
@@ -124,10 +137,11 @@ async def extract_commit_batch(
     model: str = None,
     system_prompt: str = None,
     user_prompt: str = None,
-) -> str:
+    structured: bool = False,
+) -> str | list[StoryOutput]:
     """
     Extraction phase: Extract accomplishments from a batch of commits.
-    
+
     Args:
         client: OpenAI client
         commits: List of commits with diffs
@@ -136,9 +150,10 @@ async def extract_commit_batch(
         model: Model name to use (defaults to stored config or DEFAULT_EXTRACTION_MODEL)
         system_prompt: Custom system prompt (optional, uses default if not provided)
         user_prompt: Custom user prompt (optional, uses default if not provided)
-    
+        structured: If True, return list of StoryOutput with summary/content fields
+
     Returns:
-        Summary of technical accomplishments in this batch
+        Summary of technical accomplishments (str) or list[StoryOutput] if structured=True
     """
     if not model:
         llm_config = get_llm_config()
@@ -176,60 +191,81 @@ Files changed:"""
         commits_formatted = "\n\n---\n".join(commits_text)
         
         if not system_prompt:
-            system_prompt = """You are analyzing a developer's actual code commits to extract specific technical accomplishments WITH the reasoning behind them.
+            system_prompt = """Read the commits and diffs. Understand what the dev actually shipped.
 
-Your job: Read the commit messages and diffs, then list CONCRETE technical accomplishments with SPECIFIC details AND infer WHY those decisions were made.
+Write it up like one dev explaining to another what got done. Use real dev jargon - talk about wiring up endpoints, spinning up services, hooking into APIs, plumbing data through, etc.
 
-For each accomplishment, capture:
-1. WHAT was built (the technical implementation)
-2. WHY it was needed (the problem being solved, the user/business need, or the technical constraint)
+Group related commits into one story. Split unrelated work into separate stories.
 
-Rules:
-- Use EXACT technology names from the code (FastAPI, React, SQLAlchemy, not "web framework")
-- Describe SPECIFIC features built (e.g., "JWT authentication with refresh tokens", not "auth system")
-- INFER the motivation when possible:
-  - Performance changes → what latency/throughput problem was being solved?
-  - New features → what user capability was being enabled?
-  - Refactors → what maintainability or scalability issue was being addressed?
-  - Error handling → what failure mode was being prevented?
-- Mention architectural patterns when evident (microservices, event-driven, REST API, etc.)
-- Include scale indicators (number of endpoints, integrations, etc.)
-- Be concise but specific - bullet points are fine
+Per story:
+- title: One punchy line, max 120 chars. Say what was built. Tech details when relevant.
+  Good: "Wire up WebSocket streaming for chat responses"
+  Good: "Plumb user prefs through to the settings modal"
+  Good: "Fix race condition in token refresh flow"
+  Bad: "Improved authentication system" (too vague)
+  Bad: "Enhanced user experience" (meaningless)
+- summary: Markdown. What was built, how it works, any interesting decisions.
 
-What NOT to do:
-- Don't write vague statements like "worked on backend"
-- Don't guess technologies not shown in the diffs
-- Don't include process/methodology unless there's evidence
-- Don't fabricate motivations that aren't supported by the code/commits"""
+No corporate fluff. No "enhanced", "improved", "robust". Just say what happened."""
 
         if not user_prompt:
-            user_prompt = f"""Analyze commits batch {batch_num}/{total_batches} and extract technical accomplishments:
+            user_prompt = f"""Commits batch {batch_num}/{total_batches}:
 
-{commits_formatted}
-
-List the specific technical work done in this batch. For each item:
-1. What was BUILT (the concrete implementation)
-2. Why it was needed (infer from context: what problem was solved? what user need? what constraint?)
-
-Focus on substance, not process."""
+{commits_formatted}"""
 
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=EXTRACTION_TEMPERATURE,
-            max_tokens=16000,  # Increased for reasoning models that use tokens for thinking
-        )
-        
-        return response.choices[0].message.content or ""
+        if structured:
+            # Use structured output with Pydantic model
+            response = await client.beta.chat.completions.parse(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=EXTRACTION_TEMPERATURE,
+                max_tokens=16000,
+                response_format=ExtractedCommitBatch,
+            )
+
+            parsed = response.choices[0].message.parsed
+            if parsed and parsed.stories:
+                # Convert each story to StoryOutput
+                return [
+                    StoryOutput(summary=story.title, content=story.summary)
+                    for story in parsed.stories
+                ]
+            # Fallback if parsing failed (e.g., refusal)
+            content = response.choices[0].message.content or ""
+            return [
+                StoryOutput(
+                    summary=f"Batch {batch_num} analysis",
+                    content=content if content else "[No content extracted]",
+                )
+            ]
+        else:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=EXTRACTION_TEMPERATURE,
+                max_tokens=16000,
+            )
+            
+            return response.choices[0].message.content or ""
     except Exception as e:
         error_msg = str(e).lower()
         # Handle content moderation blocks gracefully
         if "blocked" in error_msg or "content" in error_msg or "moderation" in error_msg:
             # Skip this batch but continue with others
+            if structured:
+                return [
+                    StoryOutput(
+                        summary=f"Batch {batch_num} skipped",
+                        content=f"[Batch {batch_num} skipped - content filter triggered]",
+                    )
+                ]
             return f"[Batch {batch_num} skipped - content filter triggered]"
         # Re-raise other errors
         raise
