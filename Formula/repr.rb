@@ -1,21 +1,21 @@
 class Repr < Formula
   desc "Privacy-first CLI that analyzes git repositories and generates developer profiles"
   homepage "https://repr.dev"
-  version "0.2.11"
+  version "0.2.12"
   
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/repr-app/cli/releases/download/v0.2.11/repr-macos.tar.gz"
-      sha256 "de43548fa4cde34dc17a0033d70c109a6dda35b9f8df73a34ac830160d3b9c13"
+      url "https://github.com/repr-app/cli/releases/download/v0.2.12/repr-macos.tar.gz"
+      sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
     else
-      url "https://github.com/repr-app/cli/releases/download/v0.2.11/repr-macos.tar.gz"
-      sha256 "de43548fa4cde34dc17a0033d70c109a6dda35b9f8df73a34ac830160d3b9c13"
+      url "https://github.com/repr-app/cli/releases/download/v0.2.12/repr-macos.tar.gz"
+      sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
     end
   end
 
   on_linux do
-    url "https://github.com/repr-app/cli/releases/download/v0.2.11/repr-linux.tar.gz"
-    sha256 "07c0390104dfb2518f4f5cb2b9b138d7abd16d8b38ab249ebd793e85b4e8428a"
+    url "https://github.com/repr-app/cli/releases/download/v0.2.12/repr-linux.tar.gz"
+    sha256 "0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5"
   end
 
   def install
@@ -27,5 +27,3 @@ class Repr < Formula
     system "#{bin}/repr", "config", "--json"
   end
 end
-
-
