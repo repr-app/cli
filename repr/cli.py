@@ -610,7 +610,7 @@ async def _generate_stories_async(
 ) -> list[dict]:
     """Generate stories from commits using LLM (async implementation)."""
     from .openai_analysis import get_openai_client, extract_commit_batch
-    from .templates import build_generation_prompt
+    from .templates import build_generation_prompt, StoryOutput
     
     stories = []
     
@@ -643,8 +643,8 @@ async def _generate_stories_async(
                     custom_prompt=custom_prompt,
                 )
                 
-                # Extract story from batch
-                content = await extract_commit_batch(
+                # Extract story from batch using structured output
+                result = await extract_commit_batch(
                     client=client,
                     commits=batch,
                     batch_num=i + 1,
@@ -652,16 +652,24 @@ async def _generate_stories_async(
                     model=model,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
+                    structured=True,
                 )
+                
+                # Handle structured output
+                if isinstance(result, StoryOutput):
+                    summary = result.summary
+                    content = result.content
+                else:
+                    # Fallback for string response
+                    content = result
+                    if not content or content.startswith("[Batch"):
+                        continue
+                    lines = [l.strip() for l in content.split("\n") if l.strip()]
+                    summary = lines[0] if lines else "Story"
+                    summary = summary.lstrip("#-•* ").strip()
                 
                 if not content or content.startswith("[Batch"):
                     continue
-                
-                # Extract summary (first non-empty line)
-                lines = [l.strip() for l in content.split("\n") if l.strip()]
-                summary = lines[0][:100] if lines else "Story"
-                # Clean up summary
-                summary = summary.lstrip("#-•* ").strip()
                 
                 # Build metadata
                 commit_shas = [c["full_sha"] for c in batch]
@@ -788,7 +796,8 @@ def stories(
 @app.command()
 def story(
     action: str = typer.Argument(..., help="Action: view, edit, delete, hide, feature, regenerate"),
-    story_id: str = typer.Argument(..., help="Story ID (ULID)"),
+    story_id: Optional[str] = typer.Argument(None, help="Story ID (ULID)"),
+    all_stories: bool = typer.Option(False, "--all", help="Apply to all stories (for delete)"),
 ):
     """
     Manage a single story.
@@ -796,7 +805,38 @@ def story(
     Examples:
         repr story view 01ARYZ6S41TSV4RRFFQ69G5FAV
         repr story delete 01ARYZ6S41TSV4RRFFQ69G5FAV
+        repr story delete --all
     """
+    # Handle --all flag for delete
+    if all_stories:
+        if action != "delete":
+            print_error("--all flag only works with 'delete' action")
+            raise typer.Exit(1)
+        
+        story_list = list_stories()
+        if not story_list:
+            print_info("No stories to delete")
+            raise typer.Exit()
+        
+        console.print(f"This will delete [bold]{len(story_list)}[/] stories.")
+        if confirm("Delete all stories?"):
+            deleted = 0
+            for s in story_list:
+                try:
+                    delete_story(s["id"])
+                    deleted += 1
+                except Exception:
+                    pass
+            print_success(f"Deleted {deleted} stories")
+        else:
+            print_info("Cancelled")
+        raise typer.Exit()
+    
+    # Require story_id for single-story operations
+    if not story_id:
+        print_error("Story ID required (or use --all for delete)")
+        raise typer.Exit(1)
+    
     result = load_story(story_id)
     
     if not result:
@@ -1000,7 +1040,9 @@ def push(
     for s in to_push:
         try:
             content, meta = load_story(s["id"])
-            asyncio.run(api_push_story({**meta, "content": content}))
+            # Use local story ID as client_id for sync
+            payload = {**meta, "content": content, "client_id": s["id"]}
+            asyncio.run(api_push_story(payload))
             mark_story_pushed(s["id"])
             console.print(f"  [{BRAND_SUCCESS}]✓[/] {s.get('summary', s.get('id'))[:50]}")
             pushed += 1
@@ -1049,7 +1091,8 @@ def sync():
             for s in unpushed:
                 try:
                     content, meta = load_story(s["id"])
-                    asyncio.run(api_push_story({**meta, "content": content}))
+                    payload = {**meta, "content": content, "client_id": s["id"]}
+                    asyncio.run(api_push_story(payload))
                     mark_story_pushed(s["id"])
                 except Exception:
                     pass
