@@ -90,6 +90,10 @@ def get_recent_commits(
         # Stop if we've gone past the time window
         if commit.committed_date < cutoff_timestamp:
             break
+        
+        # Skip merge commits (commits with more than one parent)
+        if len(commit.parents) > 1:
+            continue
             
         commits.append({
             "sha": commit.hexsha[:8],
@@ -159,6 +163,10 @@ def get_commits_with_diffs(
         # Skip commits before the since timestamp
         if since_timestamp and commit.committed_date <= since_timestamp:
             break
+        
+        # Skip merge commits (commits with more than one parent)
+        if len(commit.parents) > 1:
+            continue
         
         # Get files changed with diffs
         files = []
@@ -493,6 +501,10 @@ def get_commits_by_shas(
             commit = repo.commit(sha)
         except Exception:
             # Skip invalid SHAs
+            continue
+        
+        # Skip merge commits (commits with more than one parent)
+        if len(commit.parents) > 1:
             continue
         
         # Get files changed with diffs
