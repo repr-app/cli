@@ -5,12 +5,15 @@ Tokens are stored securely in OS keychain (see keychain.py).
 """
 
 import asyncio
+import platform
+import socket
 import time
 from dataclasses import dataclass
 
 import httpx
 
 from .config import set_auth, clear_auth, get_auth, is_authenticated, get_api_base
+from .telemetry import get_device_id
 
 
 def _get_device_code_url() -> str:
@@ -23,6 +26,16 @@ def _get_token_url() -> str:
 # Polling configuration
 POLL_INTERVAL = 5  # seconds
 MAX_POLL_TIME = 600  # 10 minutes
+
+
+def _get_device_name() -> str:
+    """Get a friendly device name for display."""
+    try:
+        hostname = socket.gethostname()
+        system = platform.system()
+        return f"{hostname} ({system})"
+    except Exception:
+        return "Unknown Device"
 
 
 @dataclass
@@ -106,6 +119,8 @@ async def poll_for_token(device_code: str, interval: int = POLL_INTERVAL) -> Tok
                     json={
                         "device_code": device_code,
                         "client_id": "repr-cli",
+                        "device_id": get_device_id(),
+                        "device_name": _get_device_name(),
                     },
                     timeout=30,
                 )
@@ -314,6 +329,8 @@ class AuthFlow:
                             json={
                                 "device_code": device_code_response.device_code,
                                 "client_id": "repr-cli",
+                                "device_id": get_device_id(),
+                                "device_name": _get_device_name(),
                             },
                             timeout=30,
                         )
