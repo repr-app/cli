@@ -360,6 +360,62 @@ async def push_story(story_data: dict[str, Any]) -> dict[str, Any]:
             raise APIError(f"Network error: {str(e)}")
 
 
+BATCH_SIZE = 200  # Maximum stories per batch request
+
+
+async def push_stories_batch(stories: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Push multiple stories to repr.dev in batches.
+    
+    Stories are automatically chunked into batches of BATCH_SIZE (200).
+    
+    Args:
+        stories: List of story data dicts, each including summary, content, repo info, etc.
+    
+    Returns:
+        Dict with 'pushed' count, 'failed' count, and 'results' list
+    
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    all_results: list[dict[str, Any]] = []
+    total_pushed = 0
+    total_failed = 0
+    
+    # Process in chunks of BATCH_SIZE
+    for i in range(0, len(stories), BATCH_SIZE):
+        chunk = stories[i:i + BATCH_SIZE]
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    f"{_get_stories_url()}/batch",
+                    headers=_get_headers(),
+                    json={"stories": chunk},
+                    timeout=180,  # 3 minutes for large batches
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                total_pushed += result.get("pushed", 0)
+                total_failed += result.get("failed", 0)
+                all_results.extend(result.get("results", []))
+                
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    raise AuthError("Session expired. Please run 'repr login' again.")
+                raise APIError(f"Failed to push stories batch: {e.response.status_code}")
+            except httpx.RequestError as e:
+                raise APIError(f"Network error: {str(e)}")
+    
+    return {
+        "pushed": total_pushed,
+        "failed": total_failed,
+        "results": all_results,
+    }
+
+
 async def get_public_profile_settings() -> dict[str, Any]:
     """
     Get the current user's public profile settings.

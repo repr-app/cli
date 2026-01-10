@@ -44,6 +44,7 @@ from .ui import (
     format_relative_time,
     format_bytes,
     confirm,
+    BatchProgress,
     BRAND_PRIMARY,
     BRAND_SUCCESS,
     BRAND_WARNING,
@@ -607,8 +608,14 @@ async def _generate_stories_async(
     local: bool,
     template: str = "resume",
     custom_prompt: str | None = None,
+    progress_callback: callable | None = None,
 ) -> list[dict]:
-    """Generate stories from commits using LLM (async implementation)."""
+    """Generate stories from commits using LLM (async implementation).
+    
+    Args:
+        progress_callback: Optional callback with signature (batch_num, total_batches, status)
+            where status is 'processing' or 'complete'
+    """
     from .openai_analysis import get_openai_client, extract_commit_batch
     from .templates import build_generation_prompt, StoryOutput
     
@@ -634,6 +641,10 @@ async def _generate_stories_async(
     
     try:
         for i, batch in enumerate(batches):
+            # Report progress - starting this batch
+            if progress_callback:
+                progress_callback(i + 1, len(batches), "processing")
+            
             try:
                 # Build prompt with template
                 system_prompt, user_prompt = build_generation_prompt(
@@ -665,6 +676,9 @@ async def _generate_stories_async(
                     # Fallback for string response
                     content = result
                     if not content or content.startswith("[Batch"):
+                        # Report progress - batch complete (even if empty)
+                        if progress_callback:
+                            progress_callback(i + 1, len(batches), "complete")
                         continue
                     lines = [l.strip() for l in content.split("\n") if l.strip()]
                     summary = lines[0] if lines else "Story"
@@ -700,6 +714,12 @@ async def _generate_stories_async(
                         "generated_locally": local,
                         "template": template,
                         "needs_review": False,
+                        # Categories
+                        "category": story_output.category,
+                        "scope": story_output.scope,
+                        "stack": story_output.stack,
+                        "initiative": story_output.initiative,
+                        "complexity": story_output.complexity,
                     }
 
                     # Save story
@@ -707,7 +727,14 @@ async def _generate_stories_async(
                     metadata["id"] = story_id
                     stories.append(metadata)
                 
+                # Report progress - batch complete
+                if progress_callback:
+                    progress_callback(i + 1, len(batches), "complete")
+                
             except Exception as e:
+                # Report progress even on failure
+                if progress_callback:
+                    progress_callback(i + 1, len(batches), "complete")
                 console.print(f"  [{BRAND_MUTED}]Batch {i+1} failed: {e}[/]")
     finally:
         # Properly close the async client
@@ -723,6 +750,7 @@ def _generate_stories(
     local: bool,
     template: str = "resume",
     custom_prompt: str | None = None,
+    progress_callback: callable | None = None,
 ) -> list[dict]:
     """Generate stories from commits using LLM."""
     return asyncio.run(_generate_stories_async(
@@ -732,6 +760,7 @@ def _generate_stories(
         local=local,
         template=template,
         custom_prompt=custom_prompt,
+        progress_callback=progress_callback,
     ))
 
 
@@ -742,6 +771,9 @@ def _generate_stories(
 @app.command()
 def stories(
     repo: Optional[str] = typer.Option(None, "--repo", help="Filter by repository"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category (feature, bugfix, refactor, perf, infra, docs, test, chore)"),
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Filter by scope (user-facing, internal, platform, ops)"),
+    stack: Optional[str] = typer.Option(None, "--stack", help="Filter by stack (frontend, backend, database, infra, mobile, fullstack)"),
     needs_review: bool = typer.Option(False, "--needs-review", help="Show only stories needing review"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
@@ -751,9 +783,20 @@ def stories(
     Example:
         repr stories
         repr stories --repo myproject
+        repr stories --category feature
+        repr stories --scope user-facing
+        repr stories --stack backend
         repr stories --needs-review
     """
     story_list = list_stories(repo_name=repo, needs_review=needs_review)
+    
+    # Apply category filters (local filtering since storage doesn't support these yet)
+    if category:
+        story_list = [s for s in story_list if s.get("category") == category]
+    if scope:
+        story_list = [s for s in story_list if s.get("scope") == scope]
+    if stack:
+        story_list = [s for s in story_list if s.get("stack") == stack]
     
     if json_output:
         print(json.dumps(story_list, indent=2, default=str))
@@ -794,7 +837,11 @@ def stories(
             summary = story.get("summary", "Untitled")
             created = format_relative_time(story.get("created_at", ""))
             
-            console.print(f"  {status} {summary} [{BRAND_MUTED}]• {created}[/]")
+            # Category badge
+            cat = story.get("category", "")
+            cat_badge = f"[{BRAND_MUTED}][{cat}][/] " if cat else ""
+            
+            console.print(f"  {status} {cat_badge}{summary} [{BRAND_MUTED}]• {created}[/]")
         console.print()
 
     if len(story_list) > 20:
@@ -858,6 +905,15 @@ def story(
         console.print()
         console.print(f"[{BRAND_MUTED}]ID: {story_id}[/]")
         console.print(f"[{BRAND_MUTED}]Created: {metadata.get('created_at', 'unknown')}[/]")
+        # Show categories if present
+        cat = metadata.get("category")
+        scope = metadata.get("scope")
+        stack = metadata.get("stack")
+        initiative = metadata.get("initiative")
+        complexity = metadata.get("complexity")
+        if cat or scope or stack:
+            cats = [c for c in [cat, scope, stack, initiative, complexity] if c]
+            console.print(f"[{BRAND_MUTED}]Categories: {', '.join(cats)}[/]")
     
     elif action == "edit":
         # Open in $EDITOR
@@ -1041,21 +1097,37 @@ def push(
         console.print("Run without --dry-run to publish")
         raise typer.Exit()
     
-    # Actually push
-    from .api import push_story as api_push_story
+    # Build batch payload
+    from .api import push_stories_batch
     
-    pushed = 0
+    stories_payload = []
     for s in to_push:
-        try:
-            content, meta = load_story(s["id"])
-            # Use local story ID as client_id for sync
-            payload = {**meta, "content": content, "client_id": s["id"]}
-            asyncio.run(api_push_story(payload))
-            mark_story_pushed(s["id"])
-            console.print(f"  [{BRAND_SUCCESS}]✓[/] {s.get('summary', s.get('id'))[:50]}")
-            pushed += 1
-        except (APIError, AuthError) as e:
-            console.print(f"  [{BRAND_ERROR}]✗[/] {s.get('summary', s.get('id'))[:50]}: {e}")
+        content, meta = load_story(s["id"])
+        # Use local story ID as client_id for sync
+        payload = {**meta, "content": content, "client_id": s["id"]}
+        stories_payload.append(payload)
+    
+    # Push all stories in a single batch request
+    try:
+        result = asyncio.run(push_stories_batch(stories_payload))
+        pushed = result.get("pushed", 0)
+        results = result.get("results", [])
+        
+        # Mark successful stories as pushed and display results
+        for i, story_result in enumerate(results):
+            story_id_local = to_push[i]["id"]
+            summary = to_push[i].get("summary", story_id_local)[:50]
+            
+            if story_result.get("success"):
+                mark_story_pushed(story_id_local)
+                console.print(f"  [{BRAND_SUCCESS}]✓[/] {summary}")
+            else:
+                error_msg = story_result.get("error", "Unknown error")
+                console.print(f"  [{BRAND_ERROR}]✗[/] {summary}: {error_msg}")
+        
+    except (APIError, AuthError) as e:
+        print_error(f"Batch push failed: {e}")
+        raise typer.Exit(1)
     
     # Log operation
     if pushed > 0:

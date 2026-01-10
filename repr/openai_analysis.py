@@ -23,6 +23,11 @@ class ExtractedStory(BaseModel):
     """A single coherent block of work."""
     title: str = Field(description="One-line title, max 120 chars. Dev jargon welcome. e.g. 'Wire up Redis caching for auth tokens'")
     summary: str = Field(description="Markdown - what was built, how it works, why it matters")
+    category: str = Field(description="Work type. One of: feature, bugfix, refactor, perf, infra, docs, test, chore")
+    scope: str = Field(description="Impact scope. One of: user-facing, internal, platform, ops")
+    stack: str = Field(description="Stack layer. One of: frontend, backend, database, infra, mobile, fullstack")
+    initiative: str = Field(description="Initiative type. One of: greenfield, migration, integration, scaling, incident-response, tech-debt")
+    complexity: str = Field(description="Complexity/effort. One of: quick-win, project, epic, architecture")
 
 
 class ExtractedCommitBatch(BaseModel):
@@ -205,6 +210,11 @@ Per story:
   Bad: "Improved authentication system" (too vague)
   Bad: "Enhanced user experience" (meaningless)
 - summary: Markdown. What was built, how it works, any interesting decisions.
+- category: Work type - feature, bugfix, refactor, perf, infra, docs, test, or chore
+- scope: Who's affected - user-facing, internal, platform, or ops
+- stack: Where in tech stack - frontend, backend, database, infra, mobile, or fullstack
+- initiative: Why this work - greenfield, migration, integration, scaling, incident-response, or tech-debt
+- complexity: Effort level - quick-win, project, epic, or architecture
 
 No corporate fluff. No "enhanced", "improved", "robust". Just say what happened."""
 
@@ -231,7 +241,15 @@ No corporate fluff. No "enhanced", "improved", "robust". Just say what happened.
             if parsed and parsed.stories:
                 # Convert each story to StoryOutput
                 return [
-                    StoryOutput(summary=story.title, content=story.summary)
+                    StoryOutput(
+                        summary=story.title,
+                        content=story.summary,
+                        category=story.category,
+                        scope=story.scope,
+                        stack=story.stack,
+                        initiative=story.initiative,
+                        complexity=story.complexity,
+                    )
                     for story in parsed.stories
                 ]
             # Fallback if parsing failed (e.g., refusal)

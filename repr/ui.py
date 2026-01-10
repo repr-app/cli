@@ -8,8 +8,11 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 from rich.prompt import Confirm
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.text import Text
 
 # Brand colors
 BRAND_PRIMARY = "#6366f1"  # Indigo
@@ -91,6 +94,62 @@ def create_spinner(message: str = "Working...") -> Progress:
         console=console,
         transient=True,
     )
+
+
+def create_progress_bar(total: int, description: str = "Processing") -> Progress:
+    """Create a progress bar for batch processing."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    )
+
+
+class BatchProgress:
+    """Progress tracker for batch processing with live updates."""
+    
+    def __init__(self, total: int, description: str = "Processing"):
+        self.total = total
+        self.description = description
+        self.current = 0
+        self.current_detail = ""
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=30),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        )
+        self.task_id = None
+    
+    def __enter__(self):
+        self.progress.start()
+        self.task_id = self.progress.add_task(self.description, total=self.total)
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.progress.stop()
+        return False
+    
+    def update(self, advance: int = 1, detail: str = None):
+        """Update progress by advancing and optionally changing detail text."""
+        self.current += advance
+        if detail:
+            self.current_detail = detail
+            self.progress.update(self.task_id, advance=advance, description=f"{self.description} • {detail}")
+        else:
+            self.progress.update(self.task_id, advance=advance)
+    
+    def set_detail(self, detail: str):
+        """Set the detail text without advancing."""
+        self.current_detail = detail
+        self.progress.update(self.task_id, description=f"{self.description} • {detail}")
 
 
 def create_table(title: str, columns: list[str]) -> Table:

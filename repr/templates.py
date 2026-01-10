@@ -16,6 +16,12 @@ class StoryOutput(BaseModel):
     """Structured output for a generated story."""
     summary: str = Field(description="One-line technical summary of the work (max 120 chars, no fluff)")
     content: str = Field(description="Full technical description in markdown")
+    # Categories - all inferred by LLM, nullable for backwards compatibility with older stories
+    category: str | None = Field(default=None, description="Work type: feature, bugfix, refactor, perf, infra, docs, test, chore")
+    scope: str | None = Field(default=None, description="Impact scope: user-facing, internal, platform, ops")
+    stack: str | None = Field(default=None, description="Stack layer: frontend, backend, database, infra, mobile, fullstack")
+    initiative: str | None = Field(default=None, description="Initiative type: greenfield, migration, integration, scaling, incident-response, tech-debt")
+    complexity: str | None = Field(default=None, description="Complexity: quick-win, project, epic, architecture")
 
 
 # Template definitions
