@@ -21,7 +21,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Callable
 from collections import defaultdict
 
 import typer
@@ -461,6 +461,8 @@ def generate(
         
         if commits:
             # Specific commits
+            if not json_output:
+                console.print(f"  Collecting specified commits...")
             commit_shas = [s.strip() for s in commits.split(",")]
             commit_list = get_commits_by_shas(repo_path, commit_shas)
         else:
@@ -473,12 +475,16 @@ def generate(
                 since_str = _parse_date_reference(since_date)
             
             # Recent commits within timeframe
+            if not json_output:
+                console.print(f"  Scanning commits...")
             commit_list = get_commits_with_diffs(
                 repo_path, 
                 count=500,  # Higher limit when filtering by time
                 days=timeframe_days,
                 since=since_str,
             )
+            if not json_output and commit_list:
+                console.print(f"  Found {len(commit_list)} commits")
         
         if not commit_list:
             if not json_output:
@@ -552,15 +558,39 @@ def generate(
                 console.print(f"  [{BRAND_MUTED}]Skipped {repo_info.name}[/]")
                 continue
 
-        # Generate stories
-        stories = _generate_stories(
-            commits=commit_list,
-            repo_info=repo_info,
-            batch_size=batch_size,
-            local=local,
-            template=template,
-            custom_prompt=prompt,
-        )
+        # Calculate number of batches for progress
+        num_batches = (len(commit_list) + batch_size - 1) // batch_size
+        
+        # Generate stories with progress tracking
+        if not json_output and num_batches > 1:
+            # Use progress bar for multiple batches
+            with BatchProgress(num_batches, f"Analyzing {repo_info.name}") as progress:
+                def on_progress(batch_num, total, status):
+                    if status == "complete":
+                        progress.update(1, f"batch {batch_num}/{total}")
+                
+                stories = _generate_stories(
+                    commits=commit_list,
+                    repo_info=repo_info,
+                    batch_size=batch_size,
+                    local=local,
+                    template=template,
+                    custom_prompt=prompt,
+                    progress_callback=on_progress,
+                )
+        else:
+            # Single batch or JSON mode - no progress bar needed
+            if not json_output and num_batches == 1:
+                console.print(f"  Analyzing {len(commit_list)} commits...")
+            
+            stories = _generate_stories(
+                commits=commit_list,
+                repo_info=repo_info,
+                batch_size=batch_size,
+                local=local,
+                template=template,
+                custom_prompt=prompt,
+            )
         
         for story in stories:
             if not json_output:
@@ -607,8 +637,8 @@ async def _generate_stories_async(
     batch_size: int,
     local: bool,
     template: str = "resume",
-    custom_prompt: str | None = None,
-    progress_callback: callable | None = None,
+    custom_prompt: Optional[str] = None,
+    progress_callback: Optional[Callable] = None,
 ) -> list[dict]:
     """Generate stories from commits using LLM (async implementation).
     
@@ -749,8 +779,8 @@ def _generate_stories(
     batch_size: int,
     local: bool,
     template: str = "resume",
-    custom_prompt: str | None = None,
-    progress_callback: callable | None = None,
+    custom_prompt: Optional[str] = None,
+    progress_callback: Optional[Callable] = None,
 ) -> list[dict]:
     """Generate stories from commits using LLM."""
     return asyncio.run(_generate_stories_async(
