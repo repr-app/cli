@@ -108,7 +108,7 @@ DEFAULT_CONFIG = {
     },
     "generation": {
         "batch_size": 5,  # Commits per story
-        "auto_generate_on_hook": False,  # Auto-generate when hook runs
+        "auto_generate_on_hook": True,  # Auto-generate when hook runs
         "default_template": "resume",  # Default story template
         "token_limit": 100000,  # Max tokens per cloud request
         "max_commits_per_batch": 50,  # Max commits per request

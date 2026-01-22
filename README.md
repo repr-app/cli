@@ -161,6 +161,8 @@ repr generate --since "2 weeks ago" --local
 repr generate --since monday --local
 ```
 
+**Note:** `repr generate` automatically skips commits that have already been processed into stories. You can safely run it multiple times without creating duplicates.
+
 ### Publish your profile (optional)
 
 ```bash

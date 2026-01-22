@@ -491,6 +491,23 @@ def generate(
                 console.print(f"  [{BRAND_MUTED}]No commits found[/]")
             continue
         
+        # Filter out already-processed commits
+        from .storage import get_processed_commit_shas
+        processed_shas = get_processed_commit_shas(repo_name=repo_info.name)
+        
+        original_count = len(commit_list)
+        commit_list = [c for c in commit_list if c["full_sha"] not in processed_shas]
+        
+        if not json_output and processed_shas:
+            skipped_count = original_count - len(commit_list)
+            if skipped_count > 0:
+                console.print(f"  [{BRAND_MUTED}]Skipping {skipped_count} already-processed commits[/]")
+        
+        if not commit_list:
+            if not json_output:
+                console.print(f"  [{BRAND_MUTED}]All commits already processed[/]")
+            continue
+        
         # Dry run: show what would be sent
         if dry_run:
             from .openai_analysis import estimate_tokens, get_batch_size

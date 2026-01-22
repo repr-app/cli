@@ -246,6 +246,38 @@ def update_story_metadata(story_id: str, updates: dict[str, Any]) -> bool:
         return False
 
 
+def get_processed_commit_shas(repo_name: str | None = None) -> set[str]:
+    """
+    Get all commit SHAs that have already been processed into stories.
+    
+    Args:
+        repo_name: Optional filter by repository name
+    
+    Returns:
+        Set of commit SHAs that have been processed
+    """
+    ensure_directories()
+    
+    processed_shas = set()
+    
+    for meta_path in STORIES_DIR.glob("*.json"):
+        try:
+            metadata = json.loads(meta_path.read_text())
+            
+            # Filter by repo if specified
+            if repo_name and metadata.get("repo_name") != repo_name:
+                continue
+            
+            # Collect commit SHAs from this story
+            commit_shas = metadata.get("commit_shas", [])
+            processed_shas.update(commit_shas)
+            
+        except (json.JSONDecodeError, IOError):
+            continue
+    
+    return processed_shas
+
+
 def get_unpushed_stories() -> list[dict[str, Any]]:
     """Get stories that haven't been pushed to cloud."""
     stories = list_stories()
