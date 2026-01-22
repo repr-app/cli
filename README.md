@@ -9,6 +9,12 @@ Turn commits into professional narratives for interviews, performance reviews, a
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build](https://github.com/repr-app/cli/actions/workflows/build-release.yml/badge.svg)](https://github.com/repr-app/cli/actions/workflows/build-release.yml)
 
+<p align="center">
+<strong>Official $REPR Links:</strong> <a href="https://bags.fm/5WsMLk8Zb8PWTXoHev7Ry6QDHNC2KSpY5x8R13GGBAGS">Bags.fm</a> · <a href="https://axiom.trade/t/5WsMLk8Zb8PWTXoHev7Ry6QDHNC2KSpY5x8R13GGBAGS">Axiom</a> · <a href="https://jup.ag/swap?sell=So11111111111111111111111111111111111111112&buy=5WsMLk8Zb8PWTXoHev7Ry6QDHNC2KSpY5x8R13GGBAGS">Jupiter</a> · <a href="https://photon-sol.tinyastro.io/en/lp/5WsMLk8Zb8PWTXoHev7Ry6QDHNC2KSpY5x8R13GGBAGS">Photon</a>
+<br>
+<strong>Official CA:</strong> <code>5WsMLk8Zb8PWTXoHev7Ry6QDHNC2KSpY5x8R13GGBAGS</code> (on Solana)
+</p>
+
 ## Real Developers, Real Results
 
 > *"I used repr to prep for my Meta interview in 30 minutes. Turned 2 years of commits into 8 STAR-format stories. Nailed every behavioral question."*  
@@ -327,3 +333,4 @@ brew install repr
 repr init ~/code
 repr generate --local
 ```
+
