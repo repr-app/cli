@@ -116,6 +116,7 @@ privacy_app = typer.Typer(help="Privacy audit and controls")
 config_app = typer.Typer(help="View and modify configuration")
 data_app = typer.Typer(help="Backup, restore, and manage data")
 profile_app = typer.Typer(help="View and manage profile")
+mcp_app = typer.Typer(help="MCP server for AI agent integration")
 
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(llm_app, name="llm")
@@ -123,6 +124,7 @@ app.add_typer(privacy_app, name="privacy")
 app.add_typer(config_app, name="config")
 app.add_typer(data_app, name="data")
 app.add_typer(profile_app, name="profile")
+app.add_typer(mcp_app, name="mcp")
 
 
 def version_callback(value: bool):
@@ -2751,6 +2753,81 @@ def doctor():
         print_warning("Some items need attention")
     else:
         print_error("Issues found - see recommendations above")
+
+
+# =============================================================================
+# MCP SERVER
+# =============================================================================
+
+@mcp_app.command("serve")
+def mcp_serve(
+    sse: bool = typer.Option(False, "--sse", help="Use SSE transport instead of stdio"),
+    port: int = typer.Option(3001, "--port", "-p", help="Port for SSE mode"),
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host for SSE mode"),
+):
+    """
+    Start the MCP server for AI agent integration.
+    
+    The MCP (Model Context Protocol) server exposes repr functionality
+    to AI agents like Claude Code, Cursor, Windsurf, and Cline.
+    
+    Examples:
+        repr mcp serve              # stdio mode (default)
+        repr mcp serve --sse        # SSE mode for remote clients
+        repr mcp serve --port 3001  # Custom port for SSE
+    
+    Configuration for Claude Code:
+        claude mcp add repr -- repr mcp serve
+    
+    Configuration for Cursor/Windsurf (mcp.json):
+        {
+          "mcpServers": {
+            "repr": {
+              "command": "repr",
+              "args": ["mcp", "serve"]
+            }
+          }
+        }
+    """
+    from .mcp_server import run_server
+    
+    if not sse:
+        # stdio mode - silent start, let MCP handle communication
+        run_server(sse=False)
+    else:
+        console.print(f"Starting MCP server (SSE mode) on {host}:{port}...")
+        run_server(sse=True, host=host, port=port)
+
+
+@mcp_app.command("info")
+def mcp_info():
+    """
+    Show MCP server configuration info.
+    
+    Example:
+        repr mcp info
+    """
+    console.print("[bold]MCP Server Info[/]")
+    console.print()
+    console.print("The MCP server exposes repr to AI agents via the Model Context Protocol.")
+    console.print()
+    console.print("[bold]Available Tools:[/]")
+    console.print("  • repr_generate    — Generate stories from commits")
+    console.print("  • repr_stories_list — List existing stories")
+    console.print("  • repr_week        — Weekly work summary")
+    console.print("  • repr_standup     — Yesterday/today summary")
+    console.print("  • repr_profile     — Get developer profile")
+    console.print()
+    console.print("[bold]Available Resources:[/]")
+    console.print("  • repr://profile        — Current profile")
+    console.print("  • repr://stories/recent — Recent stories")
+    console.print()
+    console.print("[bold]Usage:[/]")
+    console.print("  repr mcp serve              # Start server (stdio)")
+    console.print("  repr mcp serve --sse        # SSE mode")
+    console.print()
+    console.print("[bold]Claude Code setup:[/]")
+    console.print("  claude mcp add repr -- repr mcp serve")
 
 
 # Entry point
