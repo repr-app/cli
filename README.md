@@ -7,9 +7,11 @@
 
 # Repr CLI
 
-**Stop trying to remember what you did.** Your git history is already a career diary—repr unlocks it.
+**The developer context layer.**
 
-Turn commits into professional narratives for interviews, performance reviews, and career growth. Local-first, privacy-focused, works offline.
+Your git history is rich with context about what you build, how you think, and how you grow. repr captures that context and makes it available everywhere — to AI agents, to applications, to you.
+
+**Use it however you need:** Interview prep, performance reviews, social content, AI agent context — these are all *lenses* into the same underlying data. Local-first, privacy-focused, works offline.
 
 [![PyPI version](https://img.shields.io/pypi/v/repr-cli.svg)](https://pypi.org/project/repr-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/repr-cli.svg)](https://pypi.org/project/repr-cli/)
@@ -28,16 +30,30 @@ Turn commits into professional narratives for interviews, performance reviews, a
 > *"I run repr in a fully air-gapped environment. Zero network calls, 100% local. It's the only tool I trust for this."*  
 > **— Alex, Defense Contractor**
 
-## Perfect For
+## Lenses (Ways to Use Your Context)
 
-- 🎯 **Interview Prep** — Generate STAR-format stories in 30 minutes instead of hours of commit archaeology
-- 📊 **Performance Reviews** — Turn 6 months of work into quantified impact with one command
-- 🚀 **Sprint Demos** — Professional changelogs for stakeholders in seconds
-- 👔 **Weekly 1-on-1s** — Show up with specific examples instead of vague "I worked on stuff"
-- 🔒 **Sensitive Work** — Air-gapped support for defense, healthcare, finance
-- 💼 **Engineering Managers** — Prep for team reviews with per-developer summaries
+- 🤖 **AI Agent Context** — MCP server lets Claude Code, Cursor, and other agents know your work history
+- 🎯 **Interview Prep** — Generate STAR-format stories in 30 minutes (interview lens)
+- 📊 **Performance Reviews** — Turn 6 months of work into quantified impact (resume lens)
+- 🚀 **Sprint Demos** — Professional changelogs for stakeholders (changelog lens)
+- 📱 **Build in Public** — Social posts from your actual work (content lens)
+- 🔒 **Proof of Work** — Verified credentials from real commits (proof lens)
+- 💼 **Engineering Managers** — Team summaries and sprint recaps
 
 ## Why Repr
+
+### Context That Compounds
+
+The longer you use repr, the richer your context becomes. By the time you need a resume, interview prep, or content — you have months of structured history ready to use. No other tool builds this persistent layer.
+
+### AI-Native
+
+repr exposes your context via MCP (Model Context Protocol), so AI agents like Claude Code, Cursor, and Clawdbot can know your work history and patterns. Your coding assistant finally understands *you*.
+
+```bash
+# Start MCP server for AI agents
+repr mcp serve
+```
 
 ### Privacy First (Not an Afterthought)
 
