@@ -117,6 +117,7 @@ config_app = typer.Typer(help="View and modify configuration")
 data_app = typer.Typer(help="Backup, restore, and manage data")
 profile_app = typer.Typer(help="View and manage profile")
 mcp_app = typer.Typer(help="MCP server for AI agent integration")
+timeline_app = typer.Typer(help="Unified timeline of commits + AI sessions")
 
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(llm_app, name="llm")
@@ -125,6 +126,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(data_app, name="data")
 app.add_typer(profile_app, name="profile")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(timeline_app, name="timeline")
 
 
 def version_callback(value: bool):
@@ -2828,6 +2830,634 @@ def mcp_info():
     console.print()
     console.print("[bold]Claude Code setup:[/]")
     console.print("  claude mcp add repr -- repr mcp serve")
+
+
+# =============================================================================
+# TIMELINE
+# =============================================================================
+
+@timeline_app.command("init")
+def timeline_init(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Project path (default: current directory)",
+        exists=True,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+    with_sessions: bool = typer.Option(
+        False, "--with-sessions", "-s",
+        help="Include AI session context (Claude Code, Clawdbot)",
+    ),
+    days: int = typer.Option(
+        90, "--days", "-d",
+        help="Number of days to look back",
+    ),
+    max_commits: int = typer.Option(
+        500, "--max-commits",
+        help="Maximum commits to include",
+    ),
+    model: str = typer.Option(
+        "openai/gpt-4.1-mini", "--model", "-m",
+        help="Model for session extraction (with --with-sessions)",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Overwrite existing timeline",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
+):
+    """
+    Initialize a project timeline from git commits and AI sessions.
+    
+    Creates .repr/timeline.json with unified context from:
+    - Git commits (always included)
+    - AI session logs (with --with-sessions flag)
+    
+    Examples:
+        repr timeline init                    # Commits only
+        repr timeline init --with-sessions    # Include AI sessions
+        repr timeline init --days 30          # Last 30 days
+        repr timeline init ~/myproject        # Specific project
+    """
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        init_timeline_commits_only,
+        init_timeline_with_sessions_sync,
+        get_timeline_stats,
+    )
+    from .loaders import detect_session_source
+    
+    # Determine project path
+    project_path = path or Path.cwd()
+    
+    # Check if in git repo
+    repo_root = detect_project_root(project_path)
+    if not repo_root:
+        print_error(f"Not a git repository: {project_path}")
+        print_info("Run this command inside a git repository")
+        raise typer.Exit(1)
+    
+    project_path = repo_root
+    
+    # Check if already initialized
+    if is_initialized(project_path) and not force:
+        print_warning(f"Timeline already exists for {project_path}")
+        print_info("Use --force to reinitialize")
+        raise typer.Exit(1)
+    
+    if not json_output:
+        print_header()
+        console.print(f"Initializing timeline for [bold]{project_path.name}[/]")
+        console.print()
+    
+    # Check for session sources if --with-sessions
+    session_sources = []
+    if with_sessions:
+        session_sources = detect_session_source(project_path)
+        if not session_sources:
+            if not json_output:
+                print_warning("No AI session sources found for this project")
+                print_info("Supported: Claude Code (~/.claude/projects/), Clawdbot (~/.clawdbot/)")
+                if not confirm("Continue with commits only?", default=True):
+                    raise typer.Exit(0)
+            with_sessions = False
+        else:
+            if not json_output:
+                console.print(f"Session sources: {', '.join(session_sources)}")
+    
+    # Progress tracking
+    progress_state = {"stage": "", "current": 0, "total": 0}
+    
+    def progress_callback(stage: str, current: int, total: int) -> None:
+        progress_state["stage"] = stage
+        progress_state["current"] = current
+        progress_state["total"] = total
+    
+    try:
+        if with_sessions:
+            # Get API key for extraction
+            # Try BYOK config first, then LiteLLM config
+            api_key = None
+            byok_config = get_byok_config("openai")
+            if byok_config:
+                api_key = byok_config.get("api_key")
+            
+            if not api_key:
+                # Try LiteLLM config (returns tuple of url, key)
+                _, litellm_key = get_litellm_config()
+                api_key = litellm_key
+            
+            if not api_key:
+                # Try environment variable
+                api_key = os.environ.get("OPENAI_API_KEY")
+            
+            if not api_key:
+                if not json_output:
+                    print_warning("No API key configured for session extraction")
+                    print_info("Configure with: repr llm add openai")
+                    print_info("Or set OPENAI_API_KEY environment variable")
+                    if not confirm("Continue with commits only?", default=True):
+                        raise typer.Exit(0)
+                with_sessions = False
+        
+        if with_sessions:
+            if not json_output:
+                with create_spinner() as progress:
+                    task = progress.add_task("Initializing...", total=None)
+                    timeline = init_timeline_with_sessions_sync(
+                        project_path,
+                        days=days,
+                        max_commits=max_commits,
+                        session_sources=session_sources,
+                        api_key=api_key,
+                        model=model,
+                        progress_callback=progress_callback,
+                    )
+            else:
+                timeline = init_timeline_with_sessions_sync(
+                    project_path,
+                    days=days,
+                    max_commits=max_commits,
+                    session_sources=session_sources,
+                    api_key=api_key,
+                    model=model,
+                )
+        else:
+            if not json_output:
+                with create_spinner() as progress:
+                    task = progress.add_task("Scanning commits...", total=None)
+                    timeline = init_timeline_commits_only(
+                        project_path,
+                        days=days,
+                        max_commits=max_commits,
+                        progress_callback=progress_callback,
+                    )
+            else:
+                timeline = init_timeline_commits_only(
+                    project_path,
+                    days=days,
+                    max_commits=max_commits,
+                )
+        
+        # Get stats
+        stats = get_timeline_stats(timeline)
+        
+        if json_output:
+            print(json.dumps({
+                "success": True,
+                "project": str(project_path),
+                "timeline_path": str(project_path / ".repr" / "timeline.json"),
+                "stats": stats,
+            }, indent=2))
+        else:
+            console.print()
+            print_success(f"Timeline initialized!")
+            console.print()
+            console.print(f"  Location: .repr/timeline.json")
+            console.print(f"  Entries: {stats['total_entries']}")
+            console.print(f"    Commits: {stats['commit_count']}")
+            if stats['merged_count'] > 0:
+                console.print(f"    Merged (commit + session): {stats['merged_count']}")
+            if stats['session_count'] > 0:
+                console.print(f"    Sessions only: {stats['session_count']}")
+            if stats['date_range']['first']:
+                console.print(f"  Date range: {stats['date_range']['first'][:10]} to {stats['date_range']['last'][:10]}")
+            
+            console.print()
+            print_next_steps([
+                "repr timeline status      View timeline status",
+                "repr timeline show        Browse timeline entries",
+            ])
+    
+    except Exception as e:
+        if json_output:
+            print(json.dumps({"success": False, "error": str(e)}, indent=2))
+        else:
+            print_error(f"Failed to initialize timeline: {e}")
+        raise typer.Exit(1)
+
+
+@timeline_app.command("status")
+def timeline_status(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Project path (default: current directory)",
+        exists=True,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
+):
+    """
+    Show timeline status for a project.
+    
+    Example:
+        repr timeline status
+    """
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        load_timeline,
+        get_timeline_stats,
+    )
+    
+    # Determine project path
+    project_path = path or Path.cwd()
+    repo_root = detect_project_root(project_path)
+    
+    if not repo_root:
+        print_error(f"Not a git repository: {project_path}")
+        raise typer.Exit(1)
+    
+    project_path = repo_root
+    
+    if not is_initialized(project_path):
+        if json_output:
+            print(json.dumps({"initialized": False, "project": str(project_path)}, indent=2))
+        else:
+            print_warning(f"Timeline not initialized for {project_path.name}")
+            print_info("Run: repr timeline init")
+        raise typer.Exit(1)
+    
+    timeline = load_timeline(project_path)
+    if not timeline:
+        print_error("Failed to load timeline")
+        raise typer.Exit(1)
+    
+    stats = get_timeline_stats(timeline)
+    
+    if json_output:
+        print(json.dumps({
+            "initialized": True,
+            "project": str(project_path),
+            "stats": stats,
+            "last_updated": timeline.last_updated.isoformat() if timeline.last_updated else None,
+        }, indent=2))
+    else:
+        print_header()
+        console.print(f"Timeline: [bold]{project_path.name}[/]")
+        console.print()
+        console.print(f"  Entries: {stats['total_entries']}")
+        console.print(f"    Commits: {stats['commit_count']}")
+        console.print(f"    Merged: {stats['merged_count']}")
+        console.print(f"    Sessions: {stats['session_count']}")
+        if stats['date_range']['first']:
+            console.print(f"  Date range: {stats['date_range']['first'][:10]} to {stats['date_range']['last'][:10]}")
+        if stats['session_sources']:
+            console.print(f"  Session sources: {', '.join(stats['session_sources'])}")
+        if timeline.last_updated:
+            last_updated_str = timeline.last_updated.isoformat() if hasattr(timeline.last_updated, 'isoformat') else str(timeline.last_updated)
+            console.print(f"  Last updated: {format_relative_time(last_updated_str)}")
+
+
+@timeline_app.command("show")
+def timeline_show(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Project path (default: current directory)",
+        exists=True,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+    days: int = typer.Option(
+        7, "--days", "-d",
+        help="Show entries from last N days",
+    ),
+    entry_type: Optional[str] = typer.Option(
+        None, "--type", "-t",
+        help="Filter by type: commit, session, merged",
+    ),
+    limit: int = typer.Option(
+        20, "--limit", "-n",
+        help="Maximum entries to show",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
+):
+    """
+    Show timeline entries.
+    
+    Examples:
+        repr timeline show                    # Last 7 days
+        repr timeline show --days 30          # Last 30 days
+        repr timeline show --type merged      # Only merged entries
+    """
+    from datetime import timezone
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        load_timeline,
+        query_timeline,
+    )
+    from .models import TimelineEntryType
+    
+    # Determine project path
+    project_path = path or Path.cwd()
+    repo_root = detect_project_root(project_path)
+    
+    if not repo_root:
+        print_error(f"Not a git repository: {project_path}")
+        raise typer.Exit(1)
+    
+    project_path = repo_root
+    
+    if not is_initialized(project_path):
+        print_warning(f"Timeline not initialized for {project_path.name}")
+        print_info("Run: repr timeline init")
+        raise typer.Exit(1)
+    
+    timeline = load_timeline(project_path)
+    if not timeline:
+        print_error("Failed to load timeline")
+        raise typer.Exit(1)
+    
+    # Parse entry type filter
+    entry_types = None
+    if entry_type:
+        try:
+            entry_types = [TimelineEntryType(entry_type)]
+        except ValueError:
+            print_error(f"Invalid type: {entry_type}")
+            print_info("Valid types: commit, session, merged")
+            raise typer.Exit(1)
+    
+    # Query entries
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    entries = query_timeline(timeline, since=since, entry_types=entry_types)
+    entries = entries[-limit:]  # Take most recent
+    
+    if json_output:
+        from .timeline import _serialize_entry
+        print(json.dumps({
+            "project": str(project_path),
+            "entries": [_serialize_entry(e) for e in entries],
+        }, indent=2))
+        return
+    
+    if not entries:
+        print_info(f"No entries in the last {days} days")
+        return
+    
+    print_header()
+    console.print(f"Timeline: [bold]{project_path.name}[/] (last {days} days)")
+    console.print()
+    
+    for entry in reversed(entries):  # Show newest first
+        # Format timestamp (convert to local timezone)
+        local_ts = entry.timestamp.astimezone()
+        ts = local_ts.strftime("%Y-%m-%d %H:%M")
+        
+        # Entry type indicator
+        if entry.type == TimelineEntryType.COMMIT:
+            type_icon = "📝"
+        elif entry.type == TimelineEntryType.SESSION:
+            type_icon = "💬"
+        else:  # MERGED
+            type_icon = "🔗"
+        
+        # Build description
+        if entry.commit:
+            # Show first line of commit message
+            msg = entry.commit.message.split("\n")[0][:60]
+            if len(entry.commit.message.split("\n")[0]) > 60:
+                msg += "..."
+            desc = f"{msg}"
+            sha = entry.commit.sha[:8]
+            console.print(f"{type_icon} [{BRAND_MUTED}]{ts}[/] [{BRAND_PRIMARY}]{sha}[/] {desc}")
+        elif entry.session_context:
+            # Show problem from session
+            problem = entry.session_context.problem[:60]
+            if len(entry.session_context.problem) > 60:
+                problem += "..."
+            console.print(f"{type_icon} [{BRAND_MUTED}]{ts}[/] {problem}")
+        
+        # Show session context if merged
+        if entry.type == TimelineEntryType.MERGED and entry.session_context:
+            console.print(f"    [{BRAND_MUTED}]→ {entry.session_context.problem[:70]}[/]")
+        
+        console.print()
+
+
+@timeline_app.command("ingest-session")
+def timeline_ingest_session(
+    file: Path = typer.Option(
+        ..., "--file", "-f",
+        help="Path to session file (JSONL)",
+        exists=True,
+        file_okay=True,
+        resolve_path=True,
+    ),
+    project: Optional[Path] = typer.Option(
+        None, "--project", "-p",
+        help="Project path (default: detected from session cwd)",
+        exists=True,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+    source: Optional[str] = typer.Option(
+        None, "--source", "-s",
+        help="Session source: claude_code, clawdbot (default: auto-detect)",
+    ),
+    model: str = typer.Option(
+        "openai/gpt-4.1-mini", "--model", "-m",
+        help="Model for context extraction",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
+):
+    """
+    Ingest a completed AI session into the timeline.
+    
+    Called by SessionEnd hooks to capture context from AI coding sessions.
+    
+    Examples:
+        repr timeline ingest-session --file ~/.claude/projects/.../session.jsonl
+        repr timeline ingest-session --file /path/to/session.jsonl --project ~/myproject
+    """
+    from datetime import timezone
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        load_timeline,
+        save_timeline,
+        extract_commits_from_git,
+    )
+    from .models import (
+        TimelineEntry,
+        TimelineEntryType,
+        match_commits_to_sessions,
+    )
+    from .loaders import ClaudeCodeLoader, ClawdbotLoader
+    from .session_extractor import SessionExtractor
+    
+    # Determine source
+    if source is None:
+        if ".claude" in str(file):
+            source = "claude_code"
+        elif ".clawdbot" in str(file):
+            source = "clawdbot"
+        else:
+            # Try both loaders
+            source = "claude_code"
+    
+    # Load session
+    if source == "claude_code":
+        loader = ClaudeCodeLoader()
+    elif source == "clawdbot":
+        loader = ClawdbotLoader()
+    else:
+        print_error(f"Unknown source: {source}")
+        raise typer.Exit(1)
+    
+    session = loader.load_session(file)
+    if not session:
+        if json_output:
+            print(json.dumps({"success": False, "error": "Failed to load session"}))
+        else:
+            print_error(f"Failed to load session from {file}")
+        raise typer.Exit(1)
+    
+    # Determine project path
+    if project is None:
+        if session.cwd:
+            project = detect_project_root(Path(session.cwd))
+        if project is None:
+            if json_output:
+                print(json.dumps({"success": False, "error": "Could not detect project path"}))
+            else:
+                print_error("Could not detect project path from session")
+                print_info("Specify with --project /path/to/repo")
+            raise typer.Exit(1)
+    
+    project_path = project
+    
+    # Check if timeline exists
+    if not is_initialized(project_path):
+        if json_output:
+            print(json.dumps({"success": False, "error": f"Timeline not initialized for {project_path}"}))
+        else:
+            print_warning(f"Timeline not initialized for {project_path.name}")
+            print_info("Run: repr timeline init")
+        raise typer.Exit(1)
+    
+    # Load existing timeline
+    timeline = load_timeline(project_path)
+    if not timeline:
+        print_error("Failed to load timeline")
+        raise typer.Exit(1)
+    
+    # Check if session already ingested
+    for entry in timeline.entries:
+        if entry.session_context and entry.session_context.session_id == session.id:
+            if json_output:
+                print(json.dumps({"success": True, "skipped": True, "reason": "Session already ingested"}))
+            else:
+                print_info(f"Session {session.id[:8]} already ingested")
+            return
+    
+    # Get API key for extraction
+    api_key = None
+    byok_config = get_byok_config("openai")
+    if byok_config:
+        api_key = byok_config.get("api_key")
+    
+    if not api_key:
+        _, litellm_key = get_litellm_config()
+        api_key = litellm_key
+    
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not api_key:
+        if json_output:
+            print(json.dumps({"success": False, "error": "No API key for extraction"}))
+        else:
+            print_error("No API key configured for session extraction")
+            print_info("Configure with: repr llm add openai")
+        raise typer.Exit(1)
+    
+    # Extract context from session
+    async def _extract():
+        extractor = SessionExtractor(api_key=api_key, model=model)
+        return await extractor.extract_context(session)
+    
+    if not json_output:
+        with create_spinner() as progress:
+            task = progress.add_task("Extracting context...", total=None)
+            context = asyncio.run(_extract())
+    else:
+        context = asyncio.run(_extract())
+    
+    # Get recent commits to potentially link
+    recent_commits = extract_commits_from_git(
+        project_path,
+        days=1,  # Just last day for linking
+        max_commits=50,
+    )
+    
+    # Match session to commits
+    if recent_commits:
+        matches = match_commits_to_sessions(recent_commits, [session])
+        linked_commits = [m.commit_sha for m in matches if m.session_id == session.id]
+        context.linked_commits = linked_commits
+    
+    # Create timeline entry
+    entry_type = TimelineEntryType.SESSION
+    if context.linked_commits:
+        # Find and upgrade matching commit entries to MERGED
+        for commit_sha in context.linked_commits:
+            for entry in timeline.entries:
+                if entry.commit and entry.commit.sha == commit_sha:
+                    entry.session_context = context
+                    entry.type = TimelineEntryType.MERGED
+                    entry_type = None  # Don't create standalone entry
+                    break
+            if entry_type is None:
+                break
+    
+    # Add standalone session entry if not merged
+    if entry_type is not None:
+        entry = TimelineEntry(
+            timestamp=context.timestamp,
+            type=entry_type,
+            commit=None,
+            session_context=context,
+            story=None,
+        )
+        timeline.add_entry(entry)
+    
+    # Save timeline
+    save_timeline(timeline, project_path)
+    
+    if json_output:
+        print(json.dumps({
+            "success": True,
+            "session_id": session.id,
+            "project": str(project_path),
+            "problem": context.problem[:100],
+            "linked_commits": context.linked_commits,
+            "entry_type": entry_type.value if entry_type else "merged",
+        }, indent=2))
+    else:
+        print_success(f"Session ingested!")
+        console.print()
+        console.print(f"  Session: {session.id[:8]}")
+        console.print(f"  Problem: {context.problem[:60]}...")
+        if context.linked_commits:
+            console.print(f"  Linked to commits: {', '.join(c[:8] for c in context.linked_commits)}")
+        console.print(f"  Entry type: {entry_type.value if entry_type else 'merged'}")
 
 
 # Entry point
