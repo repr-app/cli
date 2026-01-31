@@ -22,6 +22,19 @@ class StoryOutput(BaseModel):
     stack: str | None = Field(default=None, description="Stack layer: frontend, backend, database, infra, mobile, fullstack")
     initiative: str | None = Field(default=None, description="Initiative type: greenfield, migration, integration, scaling, incident-response, tech-debt")
     complexity: str | None = Field(default=None, description="Complexity: quick-win, project, epic, architecture")
+    
+    # Context for AI agents - captures the WHY/HOW/DECISIONS
+    problem: str | None = Field(default=None, description="What problem was being solved?")
+    approach: str | None = Field(default=None, description="What pattern/approach was used?")
+    decisions: list[str] | None = Field(default=None, description="Key decisions made (format: 'Chose X over Y because Z')")
+    tradeoffs: str | None = Field(default=None, description="What was gained/lost?")
+    outcome: str | None = Field(default=None, description="Metrics, before/after, observable impact")
+    lessons: list[str] | None = Field(default=None, description="Gotchas, learnings, things to remember")
+    
+    # Source tracking for timeline entries
+    source_type: str | None = Field(default=None, description="'commit', 'session', or 'merged'")
+    session_id: str | None = Field(default=None, description="Linked session ID if from AI session")
+    commit_sha: str | None = Field(default=None, description="Linked commit SHA if from git")
 
 
 # Template definitions
@@ -116,6 +129,47 @@ Commits:
 {commits_summary}
 
 Output JSON with summary and content.""",
+    },
+    
+    "context": {
+        "name": "Context",
+        "description": "Rich context for AI agents - captures WHY, HOW, and DECISIONS",
+        "system_prompt": """Extract developer context from commits and sessions.
+
+Your output will be consumed by AI coding assistants that need to understand this developer's patterns, decisions, and reasoning.
+
+For each piece of work, capture:
+
+1. WHAT: One-line summary of what was built/changed
+2. WHY (problem): What problem was this solving? What was broken/slow/missing?
+3. HOW (approach): What strategy/pattern was used? What does the code do?
+4. DECISIONS: Were there alternatives? Why this approach? Format each as "Chose X over Y because Z"
+5. TRADEOFFS: What did you give up? What did you gain?
+6. OUTCOME: Any metrics, before/after, or observable impact?
+7. LESSONS: What gotchas were discovered? What would you tell future-you?
+
+Write for an AI that will answer questions like:
+- "How does this developer usually handle X?"
+- "What patterns do they use for Y?"
+- "Why did they choose Z over alternatives?"
+
+Output valid JSON with all fields from the schema.""",
+        "user_prompt_template": """Repository: {repo_name}
+
+Commits:
+{commits_summary}
+
+Extract structured context with:
+- summary: One-line technical summary (max 120 chars)
+- content: Full markdown description
+- problem: What problem was being solved?
+- approach: What pattern/strategy was used?
+- decisions: List of key decisions (format: "Chose X over Y because Z")
+- tradeoffs: What was gained/lost?
+- outcome: Results, metrics if available
+- lessons: Gotchas and learnings
+
+Output valid JSON only.""",
     },
 }
 

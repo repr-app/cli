@@ -56,22 +56,25 @@ class ExtractedContext(BaseModel):
 # Prompt Templates
 # =============================================================================
 
-EXTRACTION_SYSTEM_PROMPT = """You are a technical context extractor. Your job is to read AI coding assistant sessions and extract structured context that will help future AI agents understand:
+EXTRACTION_SYSTEM_PROMPT = """You are a technical context extractor. Your job is to read AI coding assistant sessions and extract structured context that will help future AI agents understand this developer's work.
 
-1. WHAT problem was being solved
-2. HOW it was approached (patterns, strategies)
-3. WHAT decisions were made and WHY
-4. WHAT worked and what didn't
+Extract the ESSENTIAL context that answers:
+1. WHAT problem was being solved (the motivation, not just the task)
+2. HOW it was approached (specific patterns, architectures, strategies)
+3. WHAT decisions were made and WHY (alternatives considered, tradeoffs made)
+4. WHAT worked, what didn't, what to watch out for
 
-Write for a technical audience. Be specific about:
-- Technologies and patterns used
-- Tradeoffs considered
-- Gotchas discovered
+Write for a technical audience. Be SPECIFIC:
+- Name exact technologies, libraries, patterns used
+- Quote actual decisions from the conversation ("chose X because...")
+- Include gotchas and learnings that would help someone working on similar code
 
 DO NOT:
+- Use generic descriptions ("improved the system", "fixed the issue")
 - Include filler or marketing language
 - Describe the extraction process itself
-- Make up information not in the session
+- Make up information not present in the session
+- Leave fields empty - extract something meaningful or say "Not discussed"
 
 Output valid JSON matching the schema provided."""
 
@@ -81,14 +84,17 @@ EXTRACTION_USER_PROMPT = """Extract structured context from this AI coding sessi
 {session_transcript}
 </session>
 
-Extract:
-- problem: What was the user trying to solve? (1 paragraph max)
-- approach: What strategy/pattern was used? (technical details)
-- decisions: Key decisions made (3-5 items, format: "Chose X over Y because Z")
-- files_modified: Files that were created or modified
-- tools_used: Main tools/commands used
-- outcome: Did it work? What was the result? (1 sentence)
-- lessons: Gotchas, learnings (1-3 items)
+Extract these fields (be specific, not generic):
+
+- problem: What was the user trying to solve? What was broken/slow/missing? (1 paragraph)
+- approach: What technical strategy/pattern was used? How does the solution work? (specific details)
+- decisions: Key decisions made - each formatted as "Chose X over Y because Z" (3-5 items)
+- files_modified: Files that were created or significantly modified
+- tools_used: Main tools, commands, or APIs used
+- outcome: Did it work? What was the observable result? (1-2 sentences)
+- lessons: Gotchas discovered, things to remember, warnings for future work (1-3 items)
+
+If a field wasn't discussed in the session, write "Not discussed" rather than guessing.
 
 Respond with valid JSON only."""
 
@@ -214,19 +220,63 @@ class SessionExtractor:
         self._client = None
     
     def _get_client(self):
-        """Get or create OpenAI client."""
+        """Get or create OpenAI client.
+        
+        Tries multiple sources for API key in order:
+        1. Explicit api_key passed to constructor
+        2. BYOK OpenAI config from repr
+        3. Local LLM config from repr
+        4. OPENAI_API_KEY environment variable
+        5. LiteLLM config from repr (cloud mode)
+        """
         if self._client is None:
+            import os
             from openai import AsyncOpenAI
             
-            # Try to get config from repr config
-            try:
-                from .config import get_litellm_config
-                litellm_config = get_litellm_config()
-                api_key = self.api_key or litellm_config.get("api_key")
-                base_url = self.base_url or litellm_config.get("api_base")
-            except Exception:
-                api_key = self.api_key
-                base_url = self.base_url
+            api_key = self.api_key
+            base_url = self.base_url
+            
+            if not api_key:
+                try:
+                    # Try BYOK OpenAI config first
+                    from .config import get_byok_config, get_llm_config
+                    
+                    byok = get_byok_config("openai")
+                    if byok and byok.get("api_key"):
+                        api_key = byok["api_key"]
+                        base_url = base_url or byok.get("base_url")
+                    
+                    # Try local LLM config
+                    if not api_key:
+                        llm_config = get_llm_config()
+                        if llm_config.get("local_api_key"):
+                            api_key = llm_config["local_api_key"]
+                            base_url = base_url or llm_config.get("local_api_url")
+                except Exception:
+                    pass
+                
+                # Try environment variable
+                if not api_key:
+                    api_key = os.getenv("OPENAI_API_KEY")
+                
+                # Try LiteLLM config (cloud mode)
+                if not api_key:
+                    try:
+                        from .config import get_litellm_config
+                        litellm_url, litellm_key = get_litellm_config()
+                        if litellm_key:
+                            api_key = litellm_key
+                            base_url = base_url or litellm_url
+                    except Exception:
+                        pass
+            
+            if not api_key:
+                raise ValueError(
+                    "No API key found. Configure one via:\n"
+                    "  - repr llm byok openai <key>  (recommended)\n"
+                    "  - OPENAI_API_KEY environment variable\n"
+                    "  - repr login (for cloud mode)"
+                )
             
             self._client = AsyncOpenAI(
                 api_key=api_key,
@@ -273,15 +323,33 @@ class SessionExtractor:
             extracted = ExtractedContext.model_validate_json(content)
             
         except Exception as e:
-            # Fallback: create minimal context from session metadata
+            # Fallback: create context from session metadata + first user message
+            first_user_msg = ""
+            for msg in session.messages:
+                if msg.role == MessageRole.USER and msg.text_content:
+                    first_user_msg = msg.text_content[:500]
+                    break
+            
+            # Try to infer problem from first message
+            problem = first_user_msg if first_user_msg else f"AI coding session in {session.cwd or 'project directory'}"
+            
+            # Determine if this is an API error vs other error
+            error_str = str(e)
+            is_api_error = any(x in error_str.lower() for x in ["401", "403", "api key", "unauthorized", "authentication"])
+            
+            if is_api_error:
+                lesson = "Extraction skipped - configure API key with 'repr llm byok openai <key>'"
+            else:
+                lesson = f"Extraction failed: {error_str[:80]}"
+            
             extracted = ExtractedContext(
-                problem=f"AI coding session in {session.cwd or 'unknown directory'}",
-                approach="Could not extract - session too short or extraction failed",
+                problem=problem[:500],
+                approach="Not extracted - see lessons",
                 decisions=[],
                 files_modified=session.files_touched[:10],
                 tools_used=session.tools_used[:10],
-                outcome=f"Session lasted {session.duration_seconds or 0:.0f}s with {session.message_count} messages",
-                lessons=[f"Extraction error: {str(e)[:100]}"],
+                outcome=f"Session: {session.message_count} messages, {session.duration_seconds or 0:.0f}s",
+                lessons=[lesson],
             )
         
         # Build SessionContext

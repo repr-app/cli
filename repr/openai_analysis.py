@@ -28,6 +28,13 @@ class ExtractedStory(BaseModel):
     stack: str = Field(description="Stack layer. One of: frontend, backend, database, infra, mobile, fullstack")
     initiative: str = Field(description="Initiative type. One of: greenfield, migration, integration, scaling, incident-response, tech-debt")
     complexity: str = Field(description="Complexity/effort. One of: quick-win, project, epic, architecture")
+    # Context fields for AI agents
+    problem: str | None = Field(default=None, description="What problem was being solved? What was broken/slow/missing?")
+    approach: str | None = Field(default=None, description="What pattern/strategy was used? Technical approach.")
+    decisions: list[str] | None = Field(default=None, description="Key decisions. Format: 'Chose X over Y because Z'")
+    tradeoffs: str | None = Field(default=None, description="What was gained/lost with this approach?")
+    outcome: str | None = Field(default=None, description="Observable result, metrics if available")
+    lessons: list[str] | None = Field(default=None, description="Gotchas, learnings, things to remember")
 
 
 class ExtractedCommitBatch(BaseModel):
@@ -216,6 +223,16 @@ Per story:
 - initiative: Why this work - greenfield, migration, integration, scaling, incident-response, or tech-debt
 - complexity: Effort level - quick-win, project, epic, or architecture
 
+ALSO capture the context (when evident from commits/diffs):
+- problem: What problem was being solved? What was broken/slow/missing?
+- approach: What pattern/strategy was used? How does the solution work?
+- decisions: Key decisions (1-3 items). Format: "Chose X over Y because Z"
+- tradeoffs: What was gained/lost with this approach?
+- outcome: Observable result (if clear from commits)
+- lessons: Gotchas visible in code comments, error handling patterns, etc.
+
+If context isn't clear from the commits, leave those fields null rather than guessing.
+
 No corporate fluff. No "enhanced", "improved", "robust". Just say what happened."""
 
         if not user_prompt:
@@ -249,6 +266,14 @@ No corporate fluff. No "enhanced", "improved", "robust". Just say what happened.
                         stack=story.stack,
                         initiative=story.initiative,
                         complexity=story.complexity,
+                        # Context fields for AI agents
+                        problem=story.problem,
+                        approach=story.approach,
+                        decisions=story.decisions,
+                        tradeoffs=story.tradeoffs,
+                        outcome=story.outcome,
+                        lessons=story.lessons,
+                        source_type="commit",
                     )
                     for story in parsed.stories
                 ]

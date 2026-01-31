@@ -14,3 +14,12 @@ venv/
 .venv/
 
 docs/
+# Local repr data
+.repr/
+
+# Misc
+.DS_Store
+
+# Nested repos/artifacts
+cli/
+web/

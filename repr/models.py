@@ -254,6 +254,88 @@ class ReprTimeline:
 
 
 # =============================================================================
+# Story Models (1:M commits, 1:M sessions)
+# =============================================================================
+
+class Story(BaseModel):
+    """
+    Coherent unit of work with WHY/WHAT context.
+    
+    Stories are the intelligent layer that synthesizes:
+    - Multiple commits (1:M) - raw data about WHAT changed
+    - Multiple sessions (1:M) - enrichment about WHY
+    """
+    id: str  # UUID
+    created_at: datetime
+    updated_at: datetime
+    
+    # 1:M relationships (SHAs/IDs, not full objects)
+    commit_shas: list[str] = Field(default_factory=list)
+    session_ids: list[str] = Field(default_factory=list)
+    
+    # Context (LLM-extracted or synthesized)
+    title: str = Field(description="One-line title, e.g. 'Add OAuth popup flow'")
+    problem: str = Field(default="", description="What was broken/missing")
+    approach: str = Field(default="", description="Technical strategy used")
+    implementation_details: list[str] = Field(default_factory=list, description="Specific code changes made")
+    decisions: list[str] = Field(default_factory=list, description="'Chose X over Y because Z'")
+    tradeoffs: str = Field(default="", description="What was gained/lost")
+    outcome: str = Field(default="", description="Observable result, metrics")
+    lessons: list[str] = Field(default_factory=list, description="Gotchas, learnings")
+    
+    # Metadata for filtering/display
+    category: str = Field(default="feature", description="feature, bugfix, refactor, perf, infra, docs, test, chore")
+    scope: str = Field(default="internal", description="user-facing, internal, platform, ops")
+    files: list[str] = Field(default_factory=list, description="Aggregated from commits")
+    
+    # Timespan
+    started_at: datetime | None = None  # First commit timestamp
+    ended_at: datetime | None = None    # Last commit timestamp
+
+
+class StoryDigest(BaseModel):
+    """Compact summary for content index."""
+    story_id: str
+    title: str
+    problem_keywords: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)  # Top 5 files
+    tech_stack: list[str] = Field(default_factory=list)
+    category: str = "feature"
+    timestamp: datetime
+
+
+class ContentIndex(BaseModel):
+    """Search index optimized for LLM retrieval."""
+    files_to_stories: dict[str, list[str]] = Field(default_factory=dict)
+    keywords_to_stories: dict[str, list[str]] = Field(default_factory=dict)
+    story_digests: list[StoryDigest] = Field(default_factory=list)
+    by_week: dict[str, list[str]] = Field(default_factory=dict)
+    last_updated: datetime | None = None
+    story_count: int = 0
+
+
+class ReprStore(BaseModel):
+    """
+    Complete repr storage model for .repr/ directory.
+    
+    Replaces the old ReprTimeline with a more structured approach.
+    """
+    project_path: str
+    initialized_at: datetime
+    last_updated: datetime | None = None
+    
+    # Raw data
+    commits: list[CommitData] = Field(default_factory=list)
+    sessions: list[SessionContext] = Field(default_factory=list)
+    
+    # Synthesized
+    stories: list[Story] = Field(default_factory=list)
+    
+    # Index
+    index: ContentIndex = Field(default_factory=ContentIndex)
+
+
+# =============================================================================
 # Commit-Session Matching
 # =============================================================================
 

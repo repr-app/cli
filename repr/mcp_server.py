@@ -541,8 +541,731 @@ async def repr_profile() -> str:
 
 
 # =============================================================================
+# TIMELINE & SESSION TOOLS (Phase 5)
+# =============================================================================
+
+@mcp.tool()
+async def init_project(
+    repo_path: str,
+    include_sessions: bool = True,
+    session_source: str = "auto",
+    days_back: int = 90,
+    max_commits: int = 500,
+) -> dict:
+    """
+    Initialize repr for a project with unified timeline.
+    
+    Creates .repr/timeline.json with commits and optionally AI session context.
+    Use this before querying context from a project.
+    
+    Args:
+        repo_path: Path to the git repository
+        include_sessions: Include AI session context (Claude Code, Clawdbot)
+        session_source: "auto" (detect), "claude_code", "clawdbot", or "none"
+        days_back: Number of days of history to include
+        max_commits: Maximum commits to include
+    
+    Returns:
+        Initialization status with stats
+    """
+    from pathlib import Path
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        init_timeline_commits_only,
+        init_timeline_with_sessions,
+        get_timeline_stats,
+    )
+    from .loaders import detect_session_source
+    
+    project_path = Path(repo_path).resolve()
+    
+    # Verify it's a git repo
+    repo_root = detect_project_root(project_path)
+    if not repo_root:
+        return {"success": False, "error": f"Not a git repository: {repo_path}"}
+    
+    project_path = repo_root
+    
+    # Check if already initialized
+    if is_initialized(project_path):
+        return {
+            "success": True,
+            "already_initialized": True,
+            "project": str(project_path),
+            "message": "Timeline already exists. Use get_context to query it.",
+        }
+    
+    # Determine session sources
+    session_sources = []
+    if include_sessions and session_source != "none":
+        if session_source == "auto":
+            session_sources = detect_session_source(project_path)
+        else:
+            session_sources = [session_source]
+    
+    try:
+        if session_sources:
+            # Get API key, base_url, and model - check all sources including local LLM
+            from .config import get_byok_config, get_litellm_config, get_llm_config
+            import os
+
+            api_key = None
+            base_url = None
+            model = None
+
+            # Check BYOK first
+            byok_config = get_byok_config("openai")
+            if byok_config:
+                api_key = byok_config.get("api_key")
+                base_url = byok_config.get("base_url")
+
+            # Check local LLM config
+            if not api_key:
+                llm_config = get_llm_config()
+                if llm_config.get("default") == "local" and llm_config.get("local_api_key"):
+                    api_key = llm_config["local_api_key"]
+                    base_url = llm_config.get("local_api_url")
+                    model = llm_config.get("local_model")
+
+            # Check LiteLLM (cloud)
+            if not api_key:
+                _, api_key = get_litellm_config()
+
+            # Check environment
+            if not api_key:
+                api_key = os.environ.get("OPENAI_API_KEY")
+
+            if not api_key:
+                # Fall back to commits only
+                session_sources = []
+        
+        if session_sources:
+            kwargs = {
+                "days": days_back,
+                "max_commits": max_commits,
+                "session_sources": session_sources,
+                "api_key": api_key,
+                "base_url": base_url,
+            }
+            if model:
+                kwargs["model"] = model
+            timeline = await init_timeline_with_sessions(project_path, **kwargs)
+        else:
+            timeline = init_timeline_commits_only(
+                project_path,
+                days=days_back,
+                max_commits=max_commits,
+            )
+        
+        stats = get_timeline_stats(timeline)
+        
+        return {
+            "success": True,
+            "project": str(project_path),
+            "timeline_path": str(project_path / ".repr" / "timeline.json"),
+            "session_sources": session_sources,
+            "stats": {
+                "total_entries": stats["total_entries"],
+                "commits": stats["commit_count"],
+                "sessions": stats["session_count"],
+                "merged": stats["merged_count"],
+            },
+        }
+    
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+async def ingest_session(
+    session_file: Optional[str] = None,
+    project_path: Optional[str] = None,
+    session_source: str = "auto",
+) -> dict:
+    """
+    Ingest a completed AI session into the timeline.
+    
+    Called by SessionEnd hooks to capture context from AI coding sessions.
+    Extracts structured context (problem, approach, decisions, outcome)
+    and links to related commits.
+    
+    Args:
+        session_file: Path to session JSONL file
+        project_path: Project path (auto-detected from session cwd if not provided)
+        session_source: "auto", "claude_code", or "clawdbot"
+    
+    Returns:
+        Ingestion result with extracted context summary
+    """
+    from pathlib import Path
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        load_timeline,
+        save_timeline,
+        extract_commits_from_git,
+    )
+    from .models import (
+        TimelineEntry,
+        TimelineEntryType,
+        match_commits_to_sessions,
+    )
+    from .loaders import ClaudeCodeLoader, ClawdbotLoader
+    from .session_extractor import SessionExtractor
+    from .config import get_byok_config, get_litellm_config
+    import os
+    
+    if not session_file:
+        return {"success": False, "error": "session_file is required"}
+    
+    file_path = Path(session_file).resolve()
+    if not file_path.exists():
+        return {"success": False, "error": f"Session file not found: {session_file}"}
+    
+    # Determine source
+    if session_source == "auto":
+        if ".claude" in str(file_path):
+            session_source = "claude_code"
+        elif ".clawdbot" in str(file_path):
+            session_source = "clawdbot"
+        else:
+            session_source = "claude_code"  # Default
+    
+    # Load session
+    if session_source == "claude_code":
+        loader = ClaudeCodeLoader()
+    elif session_source == "clawdbot":
+        loader = ClawdbotLoader()
+    else:
+        return {"success": False, "error": f"Unknown source: {session_source}"}
+    
+    session = loader.load_session(file_path)
+    if not session:
+        return {"success": False, "error": "Failed to load session"}
+    
+    # Determine project path
+    if project_path:
+        proj_path = Path(project_path).resolve()
+    elif session.cwd:
+        proj_path = detect_project_root(Path(session.cwd))
+    else:
+        proj_path = None
+    
+    if not proj_path:
+        return {"success": False, "error": "Could not detect project path. Provide project_path."}
+    
+    # Check timeline exists
+    if not is_initialized(proj_path):
+        return {
+            "success": False,
+            "error": f"Timeline not initialized for {proj_path}",
+            "hint": "Run init_project first",
+        }
+    
+    # Load timeline
+    timeline = load_timeline(proj_path)
+    if not timeline:
+        return {"success": False, "error": "Failed to load timeline"}
+    
+    # Check if already ingested
+    for entry in timeline.entries:
+        if entry.session_context and entry.session_context.session_id == session.id:
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "Session already ingested",
+                "session_id": session.id,
+            }
+    
+    # Get API key
+    api_key = None
+    byok_config = get_byok_config("openai")
+    if byok_config:
+        api_key = byok_config.get("api_key")
+    if not api_key:
+        _, api_key = get_litellm_config()
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not api_key:
+        return {"success": False, "error": "No API key for extraction"}
+    
+    # Extract context
+    try:
+        extractor = SessionExtractor(api_key=api_key)
+        context = await extractor.extract_context(session)
+    except Exception as e:
+        return {"success": False, "error": f"Extraction failed: {e}"}
+    
+    # Get recent commits to link
+    recent_commits = extract_commits_from_git(proj_path, days=1, max_commits=50)
+    
+    if recent_commits:
+        matches = match_commits_to_sessions(recent_commits, [session])
+        context.linked_commits = [m.commit_sha for m in matches if m.session_id == session.id]
+    
+    # Create entry
+    entry_type = TimelineEntryType.SESSION
+    
+    # Try to merge with existing commit entries
+    if context.linked_commits:
+        for commit_sha in context.linked_commits:
+            for entry in timeline.entries:
+                if entry.commit and entry.commit.sha == commit_sha:
+                    entry.session_context = context
+                    entry.type = TimelineEntryType.MERGED
+                    entry_type = None
+                    break
+            if entry_type is None:
+                break
+    
+    # Add standalone if not merged
+    if entry_type is not None:
+        entry = TimelineEntry(
+            timestamp=context.timestamp,
+            type=entry_type,
+            commit=None,
+            session_context=context,
+            story=None,
+        )
+        timeline.add_entry(entry)
+    
+    # Save
+    save_timeline(timeline, proj_path)
+    
+    return {
+        "success": True,
+        "session_id": session.id,
+        "project": str(proj_path),
+        "context": {
+            "problem": context.problem[:200],
+            "approach": context.approach[:200],
+            "decisions": context.decisions[:3],
+            "outcome": context.outcome,
+            "files_modified": context.files_modified[:10],
+        },
+        "linked_commits": context.linked_commits,
+        "entry_type": entry_type.value if entry_type else "merged",
+    }
+
+
+@mcp.tool()
+async def get_context(
+    query: str,
+    project: Optional[str] = None,
+    days_back: int = 30,
+    include_sessions: bool = True,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Query developer context from the timeline.
+    
+    Searches through commits and session context to find relevant
+    information about how this developer approaches problems.
+    
+    Args:
+        query: Natural language query (e.g., "how do I handle auth", "what patterns for caching")
+        project: Project path (default: current directory or all tracked repos)
+        days_back: How many days of history to search
+        include_sessions: Include session context in results
+        limit: Maximum results to return
+    
+    Returns:
+        List of relevant context entries with problem, approach, decisions, etc.
+    """
+    from pathlib import Path
+    from datetime import datetime, timedelta, timezone
+    from .timeline import (
+        detect_project_root,
+        is_initialized,
+        load_timeline,
+        query_timeline,
+    )
+    from .models import TimelineEntryType
+    from .config import get_tracked_repos
+    
+    results = []
+    
+    # Determine projects to search
+    projects = []
+    if project:
+        proj_path = Path(project).resolve()
+        repo_root = detect_project_root(proj_path)
+        if repo_root and is_initialized(repo_root):
+            projects.append(repo_root)
+    else:
+        # Try current directory
+        cwd_root = detect_project_root(Path.cwd())
+        if cwd_root and is_initialized(cwd_root):
+            projects.append(cwd_root)
+        
+        # Also check tracked repos
+        for repo in get_tracked_repos():
+            repo_path = Path(repo["path"])
+            if repo_path.exists() and is_initialized(repo_path):
+                if repo_path not in projects:
+                    projects.append(repo_path)
+    
+    if not projects:
+        return [{
+            "error": "No initialized projects found",
+            "hint": "Run init_project first or specify a project path",
+        }]
+    
+    # Query keywords from natural language
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+    
+    since = datetime.now(timezone.utc) - timedelta(days=days_back)
+    
+    for proj_path in projects:
+        timeline = load_timeline(proj_path)
+        if not timeline:
+            continue
+        
+        # Get entries in time range
+        entries = query_timeline(timeline, since=since)
+        
+        for entry in entries:
+            score = 0.0
+            matched_fields = []
+            
+            # Score based on commit message
+            if entry.commit:
+                msg_lower = entry.commit.message.lower()
+                for word in query_words:
+                    if word in msg_lower:
+                        score += 0.3
+                        matched_fields.append("commit_message")
+                        break
+                
+                # Check files
+                for f in entry.commit.files:
+                    f_lower = f.lower()
+                    for word in query_words:
+                        if word in f_lower:
+                            score += 0.2
+                            matched_fields.append("files")
+                            break
+            
+            # Score based on session context
+            if entry.session_context and include_sessions:
+                ctx = entry.session_context
+                
+                # Check problem
+                if any(word in ctx.problem.lower() for word in query_words):
+                    score += 0.5
+                    matched_fields.append("problem")
+                
+                # Check approach
+                if any(word in ctx.approach.lower() for word in query_words):
+                    score += 0.4
+                    matched_fields.append("approach")
+                
+                # Check decisions
+                for decision in ctx.decisions:
+                    if any(word in decision.lower() for word in query_words):
+                        score += 0.3
+                        matched_fields.append("decisions")
+                        break
+                
+                # Check lessons
+                for lesson in ctx.lessons:
+                    if any(word in lesson.lower() for word in query_words):
+                        score += 0.3
+                        matched_fields.append("lessons")
+                        break
+            
+            if score > 0:
+                result = {
+                    "score": round(score, 2),
+                    "matched_fields": list(set(matched_fields)),
+                    "project": proj_path.name,
+                    "timestamp": entry.timestamp.isoformat(),
+                    "type": entry.type.value,
+                }
+                
+                if entry.commit:
+                    result["commit"] = {
+                        "sha": entry.commit.sha[:8],
+                        "message": entry.commit.message.split("\n")[0][:100],
+                        "files": entry.commit.files[:5],
+                    }
+                
+                if entry.session_context:
+                    ctx = entry.session_context
+                    result["context"] = {
+                        "problem": ctx.problem,
+                        "approach": ctx.approach,
+                        "decisions": ctx.decisions,
+                        "outcome": ctx.outcome,
+                        "lessons": ctx.lessons,
+                    }
+                
+                results.append(result)
+    
+    # Sort by score and limit
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
+
+
+# =============================================================================
+# STORY-CENTRIC TOOLS (Phase 7)
+# =============================================================================
+
+@mcp.tool()
+async def search_stories(
+    query: str,
+    files: Optional[list[str]] = None,
+    since: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Search developer stories using the content index.
+    
+    Efficiently finds relevant stories by keyword, file, or time range.
+    Returns Story objects with full WHY/WHAT context.
+    
+    Args:
+        query: Keywords to search (matches title, problem, keywords)
+        files: Optional file paths to filter by
+        since: Optional time filter (e.g., "7 days ago", "2026-01-01")
+        category: Optional category filter (feature, bugfix, refactor, etc.)
+        limit: Maximum stories to return
+    
+    Returns:
+        List of matching stories with context
+    """
+    from pathlib import Path
+    from .timeline import detect_project_root, is_initialized
+    from .storage import load_repr_store
+    from .config import get_tracked_repos
+    
+    results = []
+    query_words = set(query.lower().split())
+    
+    # Find all initialized projects
+    projects = []
+    cwd_root = detect_project_root(Path.cwd())
+    if cwd_root and is_initialized(cwd_root):
+        projects.append(cwd_root)
+    
+    for repo in get_tracked_repos():
+        repo_path = Path(repo["path"])
+        if repo_path.exists() and is_initialized(repo_path):
+            if repo_path not in projects:
+                projects.append(repo_path)
+    
+    for proj_path in projects:
+        try:
+            store = load_repr_store(proj_path)
+            if not store:
+                continue
+            
+            # Use index for efficient lookup
+            index = store.index
+            matching_story_ids = set()
+            
+            # Search by file
+            if files:
+                for f in files:
+                    if f in index.files_to_stories:
+                        matching_story_ids.update(index.files_to_stories[f])
+            
+            # Search by keyword
+            for word in query_words:
+                if word in index.keywords_to_stories:
+                    if files:
+                        # AND with file matches
+                        matching_story_ids &= set(index.keywords_to_stories[word])
+                    else:
+                        matching_story_ids.update(index.keywords_to_stories[word])
+            
+            # Get full stories
+            story_map = {s.id: s for s in store.stories}
+            
+            for story_id in matching_story_ids:
+                if story_id not in story_map:
+                    continue
+                story = story_map[story_id]
+                
+                # Apply category filter
+                if category and story.category != category:
+                    continue
+                
+                # Score by relevance
+                score = 0.0
+                if any(word in story.title.lower() for word in query_words):
+                    score += 0.5
+                if any(word in story.problem.lower() for word in query_words):
+                    score += 0.4
+                if files and any(f in story.files for f in files):
+                    score += 0.3
+                
+                results.append({
+                    "score": round(score, 2),
+                    "project": proj_path.name,
+                    "story": {
+                        "id": story.id,
+                        "title": story.title,
+                        "problem": story.problem,
+                        "approach": story.approach,
+                        "implementation_details": story.implementation_details,
+                        "decisions": story.decisions,
+                        "outcome": story.outcome,
+                        "lessons": story.lessons,
+                        "category": story.category,
+                        "files": story.files[:10],
+                        "commit_count": len(story.commit_shas),
+                        "session_count": len(story.session_ids),
+                        "started_at": story.started_at.isoformat() if story.started_at else None,
+                    }
+                })
+        except Exception:
+            continue
+    
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
+
+
+@mcp.tool()
+async def get_story(story_id: str) -> dict:
+    """
+    Get full details of a specific story by ID.
+    
+    Args:
+        story_id: Story UUID
+    
+    Returns:
+        Complete story with all context and linked commits/sessions
+    """
+    from pathlib import Path
+    from .timeline import detect_project_root, is_initialized
+    from .storage import load_repr_store
+    from .config import get_tracked_repos
+    
+    # Search all projects for the story
+    projects = []
+    cwd_root = detect_project_root(Path.cwd())
+    if cwd_root and is_initialized(cwd_root):
+        projects.append(cwd_root)
+    
+    for repo in get_tracked_repos():
+        repo_path = Path(repo["path"])
+        if repo_path.exists() and is_initialized(repo_path):
+            projects.append(repo_path)
+    
+    for proj_path in projects:
+        try:
+            store = load_repr_store(proj_path)
+            if not store:
+                continue
+            
+            for story in store.stories:
+                if story.id == story_id:
+                    # Get linked commits
+                    commits = [c for c in store.commits if c.sha in story.commit_shas]
+                    # Get linked sessions
+                    sessions = [s for s in store.sessions if s.session_id in story.session_ids]
+                    
+                    return {
+                        "found": True,
+                        "project": proj_path.name,
+                        "story": story.model_dump(),
+                        "commits": [
+                            {"sha": c.sha[:8], "message": c.message, "files": c.files}
+                            for c in commits
+                        ],
+                        "sessions": [
+                            {"id": s.session_id, "problem": s.problem, "approach": s.approach}
+                            for s in sessions
+                        ],
+                    }
+        except Exception:
+            continue
+    
+    return {"found": False, "story_id": story_id}
+
+
+@mcp.tool()
+async def list_recent_stories(
+    days: int = 7,
+    category: Optional[str] = None,
+    limit: int = 20,
+) -> list[dict]:
+    """
+    List recent stories from the timeline.
+    
+    Args:
+        days: Number of days to look back
+        category: Optional category filter
+        limit: Maximum stories to return
+    
+    Returns:
+        List of recent stories with summaries
+    """
+    from pathlib import Path
+    from datetime import datetime, timedelta, timezone
+    from .timeline import detect_project_root, is_initialized
+    from .storage import load_repr_store
+    from .config import get_tracked_repos
+    
+    results = []
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # Find all projects
+    projects = []
+    cwd_root = detect_project_root(Path.cwd())
+    if cwd_root and is_initialized(cwd_root):
+        projects.append(cwd_root)
+    
+    for repo in get_tracked_repos():
+        repo_path = Path(repo["path"])
+        if repo_path.exists() and is_initialized(repo_path):
+            if repo_path not in projects:
+                projects.append(repo_path)
+    
+    for proj_path in projects:
+        try:
+            store = load_repr_store(proj_path)
+            if not store:
+                continue
+            
+            for story in store.stories:
+                # Filter by time
+                story_time = story.started_at or story.created_at
+                if story_time < since:
+                    continue
+                
+                # Filter by category
+                if category and story.category != category:
+                    continue
+                
+                results.append({
+                    "project": proj_path.name,
+                    "id": story.id,
+                    "title": story.title,
+                    "problem": story.problem[:200] if story.problem else "",
+                    "category": story.category,
+                    "commit_count": len(story.commit_shas),
+                    "session_count": len(story.session_ids),
+                    "implementation_detail_count": len(story.implementation_details),
+                    "timestamp": story_time.isoformat(),
+                })
+        except Exception:
+            continue
+    
+    # Sort by time descending
+    results.sort(key=lambda r: r["timestamp"], reverse=True)
+    return results[:limit]
+
+
+# =============================================================================
 # MCP RESOURCES
 # =============================================================================
+
 
 @mcp.resource("repr://profile")
 async def get_profile_resource() -> str:

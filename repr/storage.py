@@ -557,3 +557,163 @@ def get_storage_stats() -> dict[str, Any]:
         },
         "total_size_bytes": stories_size + profiles_size + cache_size + config_size,
     }
+
+
+# ============================================================================
+# ReprStore - Project-level storage for .repr/ directory
+# ============================================================================
+
+REPR_DIR_NAME = ".repr"
+STORE_FILE = "store.json"
+
+
+def get_repr_store_path(project_path: Path) -> Path:
+    """Get the .repr/store.json path for a project."""
+    return project_path / REPR_DIR_NAME / STORE_FILE
+
+
+def save_repr_store(store: "ReprStore", project_path: Path) -> Path:
+    """
+    Save ReprStore to .repr/store.json.
+    
+    Args:
+        store: ReprStore to save
+        project_path: Project root path
+    
+    Returns:
+        Path to the saved store file
+    """
+    from .models import ReprStore as ReprStoreModel
+    
+    repr_dir = project_path / REPR_DIR_NAME
+    repr_dir.mkdir(parents=True, exist_ok=True)
+    
+    store_path = repr_dir / STORE_FILE
+    
+    # Serialize using Pydantic
+    store_json = store.model_dump_json(indent=2)
+    _atomic_write(store_path, store_json)
+    
+    return store_path
+
+
+def load_repr_store(project_path: Path) -> "ReprStore | None":
+    """
+    Load ReprStore from .repr/store.json.
+    
+    Args:
+        project_path: Project root path
+    
+    Returns:
+        ReprStore or None if not found
+    """
+    from .models import ReprStore as ReprStoreModel
+    
+    store_path = get_repr_store_path(project_path)
+    
+    if not store_path.exists():
+        return None
+    
+    try:
+        store_json = store_path.read_text()
+        return ReprStoreModel.model_validate_json(store_json)
+    except Exception:
+        return None
+
+
+def create_repr_store(project_path: Path) -> "ReprStore":
+    """
+    Create a new empty ReprStore for a project.
+    
+    Args:
+        project_path: Project root path
+    
+    Returns:
+        New ReprStore instance
+    """
+    from datetime import datetime, timezone
+    from .models import ReprStore as ReprStoreModel, ContentIndex
+    
+    return ReprStoreModel(
+        project_path=str(project_path),
+        initialized_at=datetime.now(timezone.utc),
+        last_updated=datetime.now(timezone.utc),
+        commits=[],
+        sessions=[],
+        stories=[],
+        index=ContentIndex(),
+    )
+
+
+def update_repr_store_index(store: "ReprStore") -> None:
+    """
+    Rebuild the ContentIndex from stories in the store.
+    
+    Args:
+        store: ReprStore to update (mutates in place)
+    """
+    from datetime import datetime, timezone
+    from .models import ContentIndex, StoryDigest
+    
+    index = ContentIndex(
+        last_updated=datetime.now(timezone.utc),
+        story_count=len(store.stories),
+    )
+    
+    for story in store.stories:
+        # File → story mapping
+        for f in story.files:
+            if f not in index.files_to_stories:
+                index.files_to_stories[f] = []
+            index.files_to_stories[f].append(story.id)
+        
+        # Keyword extraction and mapping
+        import re
+        text = f"{story.title} {story.problem}".lower()
+        words = re.findall(r'\b[a-z]+\b', text)
+        stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'for', 'to', 'in', 'on', 'of', 'and', 'or', 'with', 'from'}
+        keywords = [w for w in words if len(w) > 2 and w not in stopwords]
+        
+        for kw in set(keywords):
+            if kw not in index.keywords_to_stories:
+                index.keywords_to_stories[kw] = []
+            index.keywords_to_stories[kw].append(story.id)
+        
+        # Weekly index
+        if story.started_at:
+            week = story.started_at.strftime("%Y-W%W")
+            if week not in index.by_week:
+                index.by_week[week] = []
+            index.by_week[week].append(story.id)
+        
+        # Story digest
+        index.story_digests.append(StoryDigest(
+            story_id=story.id,
+            title=story.title,
+            problem_keywords=list(set(keywords))[:10],
+            files=story.files[:5],
+            tech_stack=_detect_tech_stack(story.files),
+            category=story.category,
+            timestamp=story.started_at or story.created_at,
+        ))
+    
+    store.index = index
+
+
+def _detect_tech_stack(files: list[str]) -> list[str]:
+    """Detect technologies from file extensions."""
+    tech = set()
+    
+    ext_map = {
+        '.py': 'Python', '.ts': 'TypeScript', '.tsx': 'React',
+        '.js': 'JavaScript', '.jsx': 'React', '.go': 'Go',
+        '.rs': 'Rust', '.vue': 'Vue', '.sql': 'SQL',
+    }
+    
+    for f in files:
+        for ext, name in ext_map.items():
+            if f.endswith(ext):
+                tech.add(name)
+    
+    return sorted(tech)
+

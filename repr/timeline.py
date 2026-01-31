@@ -392,23 +392,25 @@ async def init_timeline_with_sessions(
     max_commits: int = 500,
     session_sources: list[str] | None = None,
     api_key: str | None = None,
+    base_url: str | None = None,
     model: str = "openai/gpt-4.1-mini",
     extraction_concurrency: int = 3,
     progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> ReprTimeline:
     """
     Initialize timeline with commits and session context extraction.
-    
+
     Args:
         project_path: Path to git repository
         days: Number of days to look back
         max_commits: Maximum number of commits
         session_sources: Sources to use (None = auto-detect)
         api_key: API key for LLM extraction
+        base_url: Base URL for LLM API (e.g., for local Ollama)
         model: Model for extraction
         extraction_concurrency: Max concurrent LLM extractions
         progress_callback: Optional callback(stage, current, total)
-    
+
     Returns:
         Initialized ReprTimeline with session context
     """
@@ -466,7 +468,7 @@ async def init_timeline_with_sessions(
     session_contexts: dict[str, SessionContext] = {}
     
     if sessions:
-        extractor = SessionExtractor(api_key=api_key, model=model)
+        extractor = SessionExtractor(api_key=api_key, base_url=base_url, model=model)
         
         # Extract in batches with progress
         total_sessions = len(sessions)

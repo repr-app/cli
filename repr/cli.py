@@ -2941,20 +2941,20 @@ def timeline_init(
     try:
         if with_sessions:
             # Get API key for extraction
-            # Try BYOK config first, then LiteLLM config
+            # Priority: BYOK OpenAI > env OPENAI_API_KEY > LiteLLM (cloud)
             api_key = None
             byok_config = get_byok_config("openai")
             if byok_config:
                 api_key = byok_config.get("api_key")
             
             if not api_key:
-                # Try LiteLLM config (returns tuple of url, key)
-                _, litellm_key = get_litellm_config()
-                api_key = litellm_key
+                # Try environment variable (direct OpenAI access)
+                api_key = os.environ.get("OPENAI_API_KEY")
             
             if not api_key:
-                # Try environment variable
-                api_key = os.environ.get("OPENAI_API_KEY")
+                # Try LiteLLM config (cloud mode - needs LiteLLM proxy URL)
+                _, litellm_key = get_litellm_config()
+                api_key = litellm_key
             
             if not api_key:
                 if not json_output:
@@ -3458,6 +3458,239 @@ def timeline_ingest_session(
         if context.linked_commits:
             console.print(f"  Linked to commits: {', '.join(c[:8] for c in context.linked_commits)}")
         console.print(f"  Entry type: {entry_type.value if entry_type else 'merged'}")
+
+
+@timeline_app.command("synthesize")
+def timeline_synthesize(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Project path (default: current directory)",
+        exists=True,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+    weeks: int = typer.Option(
+        4, "--weeks", "-w",
+        help="Number of weeks to look back",
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m",
+        help="Model to use for synthesis (default: from config)",
+    ),
+    batch_size: int = typer.Option(
+        25, "--batch-size", "-b",
+        help="Commits per LLM batch",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Don't save results",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
+):
+    """
+    Synthesize stories from commits.
+    
+    Uses LLM to group related commits into coherent stories
+    and extract rich context (problem, approach, implementation details).
+    
+    Examples:
+        repr timeline synthesize              # Default 4 weeks
+        repr timeline synthesize --weeks 8   # Last 8 weeks
+        repr timeline synthesize --model kimi-k2.5:cloud
+    """
+    import asyncio
+    from .timeline import detect_project_root, extract_commits_from_git
+    from .story_synthesis import synthesize_stories
+    from .storage import load_repr_store, save_repr_store, create_repr_store
+    
+    # Determine project path
+    project_path = path or Path.cwd()
+    repo_root = detect_project_root(project_path)
+    
+    if not repo_root:
+        print_error(f"Not a git repository: {project_path}")
+        raise typer.Exit(1)
+    
+    project_path = repo_root
+    
+    if not json_output:
+        print_header()
+        console.print(f"Synthesizing stories for [bold]{project_path.name}[/]")
+        console.print()
+    
+    # Extract commits
+    days = weeks * 7
+    commits = extract_commits_from_git(project_path, days=days)
+    
+    if not commits:
+        if json_output:
+            print(json.dumps({"success": False, "error": "No commits found"}))
+        else:
+            print_warning(f"No commits in the last {weeks} weeks")
+        raise typer.Exit(1)
+    
+    if not json_output:
+        console.print(f"  Found {len(commits)} commits in last {weeks} weeks")
+    
+    # Sessions not yet integrated into story synthesis
+    sessions = None
+    
+    # Get model from config if not specified
+    if not model:
+        llm_config = get_llm_config()
+        # Priority: extraction_model > local_model > default
+        model = llm_config.get("extraction_model") or llm_config.get("local_model") or "gpt-4o-mini"
+    
+    if not json_output:
+        console.print(f"  Using model: {model}")
+        console.print()
+    
+    # Run synthesis
+    async def run_synthesis():
+        def progress(current: int, total: int) -> None:
+            if not json_output:
+                console.print(f"  Batch {current}/{total}")
+        
+        return await synthesize_stories(
+            commits=commits,
+            sessions=sessions if sessions else None,
+            model=model,
+            batch_size=batch_size,
+            progress_callback=progress,
+        )
+    
+    try:
+        stories, index = asyncio.run(run_synthesis())
+    except ValueError as e:
+        if json_output:
+            print(json.dumps({"success": False, "error": str(e)}))
+        else:
+            print_error(f"Synthesis failed: {e}")
+            print_info("Configure API key: repr llm byok openai <key>")
+        raise typer.Exit(1)
+    
+    if json_output:
+        print(json.dumps({
+            "success": True,
+            "stories_count": len(stories),
+            "stories": [s.model_dump(mode="json") for s in stories],
+            "index_stats": {
+                "files": len(index.files_to_stories),
+                "keywords": len(index.keywords_to_stories),
+                "weeks": len(index.by_week),
+            },
+        }, indent=2, default=str))
+        return
+    
+    console.print()
+    console.print(f"[{BRAND_SUCCESS}]✓[/] Synthesized {len(stories)} stories")
+    console.print()
+    
+    # Display stories
+    for i, story in enumerate(stories[:10], 1):
+        console.print(f"{i}. [{BRAND_MUTED}][{story.category}][/] {story.title[:60]}")
+        console.print(f"   Commits: {len(story.commit_shas)} | Sessions: {len(story.session_ids)}")
+        if story.problem:
+            console.print(f"   Problem: {story.problem[:70]}...")
+        if story.implementation_details:
+            console.print(f"   Details: {len(story.implementation_details)} items")
+        console.print()
+    
+    if len(stories) > 10:
+        console.print(f"[{BRAND_MUTED}]...and {len(stories) - 10} more[/]")
+        console.print()
+    
+    # Save
+    if not dry_run:
+        store = create_repr_store(stories, index)
+        store_path = save_repr_store(project_path, store)
+        print_success(f"Saved to {store_path.relative_to(project_path)}")
+    else:
+        print_info("Dry run - not saved")
+
+
+@timeline_app.command("serve")
+def timeline_serve(
+    port: int = typer.Option(
+        3000, "--port", "-p",
+        help="Port to serve on",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Host to bind to",
+    ),
+    open_browser: bool = typer.Option(
+        False, "--open",
+        help="Auto-open browser",
+    ),
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Project path (default: current directory)",
+        exists=True,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+):
+    """
+    Launch web dashboard for timeline exploration.
+    
+    Starts a local web server to browse and search through your
+    timeline entries with rich context visualization.
+    
+    Examples:
+        repr timeline serve              # localhost:3000
+        repr timeline serve --port 8080  # custom port
+        repr timeline serve --open       # auto-open browser
+    """
+    import webbrowser
+    from .timeline import detect_project_root
+    from .dashboard import run_server
+    
+    # Determine project path
+    project_path = path or Path.cwd()
+    repo_root = detect_project_root(project_path)
+    
+    if not repo_root:
+        print_error(f"Not a git repository: {project_path}")
+        raise typer.Exit(1)
+    
+    project_path = repo_root
+    
+    # Check if story store exists
+    store_path = project_path / ".repr" / "store.json"
+    if not store_path.exists():
+        print_error("Stories not found (store.json)")
+        print_info("Run: repr timeline synthesize")
+        raise typer.Exit(1)
+    
+    url = f"http://{host}:{port}"
+    
+    print_header()
+    console.print(f"Starting dashboard for [bold]{project_path.name}[/]")
+    console.print()
+    console.print(f"  URL: [bold blue]{url}[/]")
+    console.print(f"  Source: .repr/store.json")
+    console.print()
+    console.print("[dim]Press Ctrl+C to stop[/]")
+    console.print()
+    
+    if open_browser:
+        webbrowser.open(url)
+    
+    try:
+        run_server(port, host, store_path)
+    except KeyboardInterrupt:
+        console.print()
+        print_info("Server stopped")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print_error(f"Port {port} is already in use")
+            print_info(f"Try: repr timeline serve --port {port + 1}")
+        else:
+            raise
 
 
 # Entry point
