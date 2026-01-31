@@ -64,6 +64,16 @@ repr mcp serve
 - ✅ **OS keychain** — API keys never touch config files, stored in system keychain
 - ✅ **Zero telemetry** — No tracking, no analytics, no silent uploads
 
+### Story Engine (New in v0.2.16)
+
+`repr` now synthesizes **Stories** from your commits — coherent narratives that capture WHY and HOW you built something, not just WHAT changed.
+
+- **Synthesize**: Group related commits into stories with `repr timeline synthesize`
+- **Dashboard**: Explore your work in a premium dark-mode UI with `repr timeline serve`
+- **MCP Integration**: AI agents can answer questions about your implementation details
+
+[Read the Story Engine Documentation →](docs/STORY_ENGINE.md)
+
 ### Time Savings
 
 | Task | Without repr | With repr | Savings |
