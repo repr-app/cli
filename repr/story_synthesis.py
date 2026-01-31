@@ -58,10 +58,12 @@ STORY_SYNTHESIS_SYSTEM = """You analyze git commits and group them into coherent
 
 Your job:
 1. Read the batch of commits
-2. Identify which commits belong together (same feature, bug fix, refactor, etc.)
+2. Group related commits into meaningful stories (features, fixes, refactors)
 3. For each group, extract the WHY/WHAT/HOW context
 
-A single commit CAN be its own story. Multiple related commits should be grouped together.
+IMPORTANT: Prefer grouping commits over creating many small stories. A story should represent a complete unit of value or logical change. 
+- If multiple commits relate to the same feature, GROUP THEM.
+- If a commit is a small fix for a previous commit in the batch, GROUP THEM.
 
 Output JSON with a "stories" array. EVERY field must be filled in - do not leave any empty:
 
@@ -120,11 +122,11 @@ class StorySynthesizer:
         self,
         api_key: str | None = None,
         base_url: str | None = None,
-        model: str = "gpt-4o-mini",
+        model: str | None = "gpt-4o-mini",
     ):
         self.api_key = api_key
         self.base_url = base_url
-        self.model = model
+        self.model = model or "gpt-4o-mini"
         self._client: AsyncOpenAI | None = None
     
     def _get_client(self) -> AsyncOpenAI:
@@ -305,8 +307,17 @@ class StorySynthesizer:
                     if any(sha in session.linked_commits for sha in boundary.commit_shas):
                         linked_sessions.append(session.session_id)
             
+            # Detect technologies from files
+            files_list = sorted(all_files)[:50]  # Cap at 50 files
+            technologies = self._detect_tech_stack(files_list)
+
+            # Deterministic ID based on sorted commit SHAs
+            # This prevents duplicates if the same stories are generated again
+            sorted_shas = sorted(matched_shas)
+            story_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"repr-story-{'-'.join(sorted_shas)}"))
+
             story = Story(
-                id=str(uuid.uuid4()),
+                id=story_id,
                 created_at=now,
                 updated_at=now,
                 commit_shas=matched_shas,  # Use full matched SHAs
@@ -320,7 +331,8 @@ class StorySynthesizer:
                 outcome=boundary.outcome,
                 lessons=boundary.lessons,
                 category=boundary.category,
-                files=sorted(all_files)[:50],  # Cap at 50 files
+                technologies=technologies,
+                files=files_list,
                 started_at=started_at,
                 ended_at=ended_at,
             )
