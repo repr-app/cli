@@ -13,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 def _get_stories_from_db() -> list[dict]:
     """Get stories from SQLite database."""
     from ..db import get_db
+    from ..tools import get_commits_by_shas
 
     db = get_db()
     # Create project mapping
@@ -62,10 +63,14 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        print(f"DEBUG: Handling GET request for {self.path}")
         if self.path == "/" or self.path == "/index.html":
             self.serve_dashboard()
         elif self.path == "/api/stories":
             self.serve_stories()
+        elif self.path.startswith("/api/diff"):
+            print("DEBUG: Routing to serve_diff")
+            self.serve_diff()
         elif self.path == "/api/status":
             self.serve_status()
         else:
@@ -91,6 +96,54 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body.encode())
         except Exception as e:
+            self.send_error(500, str(e))
+
+    def serve_diff(self):
+        """Serve diff for a story."""
+        from urllib.parse import urlparse, parse_qs
+        from ..db import get_db
+        from ..tools import get_commits_by_shas
+
+        try:
+            print(f"Received diff request for path: {self.path}")
+            query = parse_qs(urlparse(self.path).query)
+            story_id = query.get("story_id", [None])[0]
+            print(f"Extracted story_id: {story_id}")
+
+            if not story_id:
+                self.send_error(400, "Missing story_id")
+                return
+
+            db = get_db()
+            story = db.get_story(story_id)
+            if not story:
+                self.send_error(404, "Story not found")
+                return
+            
+            # Get project path to access git repo
+            project = db.get_project_by_id(story.project_id)
+            if not project:
+                self.send_error(404, "Project not found")
+                return
+            
+            project_path = Path(project["path"])
+            if not project_path.exists():
+                self.send_error(404, "Repository path not found")
+                return
+
+            # Get commits with diffs
+            commit_shas = story.commit_shas
+            commits = get_commits_by_shas(project_path, commit_shas)
+
+            body = json.dumps({"commits": commits}, default=str)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            print(f"Error serving diff: {e}")
             self.send_error(500, str(e))
 
     def serve_status(self):

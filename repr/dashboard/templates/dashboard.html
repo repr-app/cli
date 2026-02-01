@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>repr timeline</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1e212b;
+      --surface-hover: #292d3b;
+      --border: #333842;
+      --text: #e6e8eb;
+      --text-muted: #8b949e;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+      --green: #00bfa5;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1rem;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .refresh-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      transition: all 0.2s;
+    }
+
+    .refresh-btn:hover {
+      background: var(--surface-hover);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+
+    .stat-label {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .story-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+      transition: transform 0.2s;
+    }
+
+    .story-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }
+
+    .story-meta {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .story-repo {
+      background: rgba(59, 130, 246, 0.1);
+      color: var(--primary);
+      padding: 0.125rem 0.5rem;
+      border-radius: 99px;
+      font-weight: 500;
+    }
+
+    .story-title {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem 0;
+      line-height: 1.4;
+    }
+
+    .story-content {
+      font-size: 0.95rem;
+      color: #d1d5db;
+      white-space: pre-wrap;
+    }
+
+    .code-block {
+      background: #111;
+      padding: 1rem;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      overflow-x: auto;
+      margin-top: 1rem;
+      border: 1px solid var(--border);
+    }
+
+    .category-badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      margin-right: 0.5rem;
+    }
+
+    .cat-feature {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+    }
+
+    .cat-bugfix {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--error);
+    }
+
+    .cat-refactor {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+    }
+
+    .cat-chore {
+      background: rgba(139, 148, 158, 0.15);
+      color: var(--text-muted);
+    }
+
+    .file-list {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .file-item {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+      cursor: pointer;
+    }
+
+    .file-item:hover {
+      color: var(--text);
+      text-decoration: underline;
+    }
+
+    .view-diff-btn {
+      display: inline-block;
+      margin-top: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--primary);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .view-diff-btn:hover {
+      text-decoration: underline;
+    }
+
+    /* Modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 1000;
+      backdrop-filter: blur(4px);
+    }
+
+    .modal.open {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-content {
+      background: var(--surface);
+      width: 90%;
+      max-width: 1000px;
+      height: 90vh;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0;
+      background: #0d1117;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .close-btn:hover {
+      color: var(--text);
+    }
+
+    /* Diff styling */
+    .diff-file {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .diff-header {
+      background: var(--surface);
+      padding: 0.75rem 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 1rem;
+      position: sticky;
+      top: 0;
+    }
+
+    .diff-content {
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      overflow-x: auto;
+    }
+
+    .diff-line {
+      display: flex;
+      line-height: 1.5;
+    }
+
+    .line-num {
+      width: 3rem;
+      flex-shrink: 0;
+      text-align: right;
+      padding-right: 1rem;
+      color: #4b5563;
+      user-select: none;
+      border-right: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .line-code {
+      padding-left: 1rem;
+      white-space: pre;
+      flex: 1;
+    }
+
+    .line-add {
+      background: rgba(16, 185, 129, 0.15);
+      color: #e2e8f0;
+    }
+
+    .line-del {
+      background: rgba(239, 68, 68, 0.15);
+      color: #e2e8f0;
+    }
+
+    .line-hunk {
+      background: #2d3342;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h1>
+          <span>repr</span>
+          <span style="color: var(--text-muted); font-weight: 400;">timeline</span>
+        </h1>
+        <button class="refresh-btn" onclick="fetchStories()">Refresh</button>
+      </div>
+    </header>
+
+    <div class="stats-grid" id="stats">
+      <!-- Stats populated by JS -->
+    </div>
+
+    <div id="stories">
+      <div style="text-align: center; padding: 4rem; color: var(--text-muted);">
+        Loading stories...
+      </div>
+    </div>
+  </div>
+
+  <!-- Diff Modal -->
+  <div id="diffDataModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="margin:0">Changes</h3>
+        <button class="close-btn" onclick="closeModal()">&times;</button>
+      </div>
+      <div id="diffContent" class="modal-body">
+        <!-- Content injected here -->
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let modal = document.getElementById('diffDataModal');
+
+    function closeModal() {
+      modal.classList.remove('open');
+    }
+
+    // Close on outside click
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    async function fetchStats() {
+      try {
+        const res = await fetch('/api/status');
+        const stats = await res.json();
+
+        const html = `
+                    <div class="stat-card">
+                        <div class="stat-value">${stats.count}</div>
+                        <div class="stat-label">Stories</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${stats.repos}</div>
+                        <div class="stat-label">Repositories</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${stats.files}</div>
+                        <div class="stat-label">Files Touched</div>
+                    </div>
+                `;
+        document.getElementById('stats').innerHTML = html;
+      } catch (e) {
+        console.error("Failed to load stats", e);
+      }
+    }
+
+    async function fetchStories() {
+      try {
+        const res = await fetch('/api/stories');
+        const data = await res.json();
+        renderStories(data.stories);
+      } catch (e) {
+        document.getElementById('stories').innerHTML =
+          '<div style="text-align: center; color: var(--error);">Failed to load stories</div>';
+        console.error(e);
+      }
+    }
+
+    function renderStories(stories) {
+      const container = document.getElementById('stories');
+      if (stories.length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: var(--text-muted);">No stories found</div>';
+        return;
+      }
+
+      container.innerHTML = stories.map(story => {
+        const date = new Date(story.created_at).toLocaleDateString(undefined, {
+          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+
+        const categoryClass = `cat-${(story.category || 'chore').toLowerCase()}`;
+
+        // Format files
+        let filesHtml = '';
+        // Prefer file_changes if available (from internal mode)
+        const files = story.file_paths || [];
+        if (files.length > 0) {
+          const limit = 5;
+          const displayFiles = files.slice(0, limit);
+          const remainder = files.length - limit;
+
+          filesHtml = '<div class="file-list">';
+          filesHtml += displayFiles.map(f =>
+            `<div class="file-item" onclick="showDiff('${story.id}', '${f}')">${f}</div>`
+          ).join('');
+
+          if (remainder > 0) {
+            filesHtml += `<div class="file-item" style="color:var(--primary)" onclick="showDiff('${story.id}')">+ ${remainder} more files...</div>`;
+          }
+          filesHtml += '</div>';
+        }
+
+        // Changes diff link
+        const totalIns = story.lines_added || 0;
+        const totalDel = story.lines_removed || 0;
+        const diffLabel = `View diff (+${totalIns}/-${totalDel})`;
+
+        return `
+                    <div class="story-card">
+                        <div class="story-header">
+                            <div>
+                                <h2 class="story-title">
+                                    <span class="category-badge ${categoryClass}">${story.category || 'misc'}</span>
+                                    ${story.summary || story.title || 'Untitled'}
+                                </h2>
+                                <div class="story-meta">
+                                    <span class="story-repo">${story.repo_name}</span>
+                                    <span>${date}</span>
+                                    <span>${story.complexity ? 'Length: ' + story.complexity : ''}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="story-content">${formatContent(story)}</div>
+                        ${filesHtml}
+                        <div class="view-diff-btn" onclick="showDiff('${story.id}')">${diffLabel}</div>
+                    </div>
+                `;
+      }).join('');
+    }
+
+    function formatContent(story) {
+      // Prefer post_body or internal_post
+      let text = story.post_body || story.internal_post || story.public_post || story.content || '';
+
+      // Simple markdown formatting
+      // Bold
+      text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      // Code blocks
+      text = text.replace(/```([\s\S]*?)```/g, '<div class="code-block">$1</div>');
+      // Inline code
+      text = text.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1); padding:0.1rem 0.3rem; border-radius:4px;">$1</code>');
+
+      return text;
+    }
+
+    async function showDiff(storyId, highlightFile = null) {
+      console.log(`showDiff called for story ${storyId}`);
+      if (!modal) return;
+      modal.classList.add('open');
+      const contentDiv = document.getElementById('diffContent');
+      contentDiv.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">Loading diff...</div>';
+
+      try {
+        const res = await fetch(`/api/diff?story_id=${storyId}`);
+        if (!res.ok) throw new Error('Failed to load diff');
+
+        const data = await res.json();
+        const commits = data.commits || [];
+
+        if (commits.length === 0) {
+          contentDiv.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">No diffs found.</div>';
+          return;
+        }
+
+        let html = '';
+
+        commits.forEach(commit => {
+          commit.files.forEach(file => {
+            if (!file.diff) return;
+
+            const isMatch = highlightFile && (file.path === highlightFile || file.path.endsWith('/' + highlightFile));
+            const bgStyle = isMatch ? 'background: #2a303c;' : ''; // Highlight style
+
+            html += `
+                            <div class="diff-file" ${isMatch ? 'id="highlight-file"' : ''}>
+                                <div class="diff-header" style="${bgStyle}">
+                                    <span>${escapeHtml(file.path)}</span>
+                                    <span class="diff-stat" style="color:var(--success)">+${file.insertions || 0}</span>
+                                    <span class="diff-stat" style="color:var(--error)">-${file.deletions || 0}</span>
+                                </div>
+                                <div class="diff-content">
+                        `;
+
+            const lines = file.diff.split('\n');
+            lines.forEach((line, i) => {
+              let className = 'line-code';
+              if (line.startsWith('+')) className += ' line-add';
+              else if (line.startsWith('-')) className += ' line-del';
+              else if (line.startsWith('@@')) className += ' line-hunk';
+
+              html += `
+                                <div class="diff-line ${className}">
+                                    <div class="line-num">${i + 1}</div>
+                                    <div class="line-code">${escapeHtml(line)}</div>
+                                </div>
+                            `;
+            });
+
+            html += `</div></div>`;
+          });
+        });
+
+        contentDiv.innerHTML = html;
+
+        if (highlightFile) {
+          const el = document.getElementById('highlight-file');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+      } catch (e) {
+        console.error(e);
+        contentDiv.innerHTML = '<div style="padding: 40px; text-align: center; color:var(--error);">Error loading diff</div>';
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Init
+    fetchStats();
+    fetchStories();
+  </script>
+</body>
+
+</html>
