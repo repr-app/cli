@@ -3423,6 +3423,175 @@ def mcp_info():
     console.print("  claude mcp add repr -- repr mcp serve")
 
 
+@mcp_app.command("install-skills")
+def mcp_install_skills(
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing skill files"),
+):
+    """
+    Install repr skills to Claude Code.
+
+    Installs a skill that teaches Claude Code how and when to use repr commands
+    (init, generate, timeline, changes).
+
+    Example:
+        repr mcp install-skills
+        repr mcp install-skills --force  # Overwrite existing
+    """
+    plugin_dir = Path.home() / ".claude" / "plugins" / "local" / "repr"
+    skill_dir = plugin_dir / "skills" / "repr"
+    plugin_json_dir = plugin_dir / ".claude-plugin"
+
+    # Check if already installed
+    skill_file = skill_dir / "SKILL.md"
+    if skill_file.exists() and not force:
+        print_warning("repr skill already installed")
+        console.print(f"  Location: {skill_file}")
+        console.print()
+        console.print("Use --force to overwrite")
+        return
+
+    # Create directories
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    plugin_json_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write plugin.json
+    plugin_json = {
+        "name": "repr",
+        "description": "Developer context layer - understand what you've actually worked on through git history and AI sessions.",
+        "author": {"name": "repr.dev"}
+    }
+    (plugin_json_dir / "plugin.json").write_text(json.dumps(plugin_json, indent=2) + "\n")
+
+    # Write skill file
+    skill_content = '''---
+name: repr
+description: Use this skill when the user asks to "show my changes", "what did I work on", "generate a story", "initialize repr", "show timeline", "set up repr", or needs context about their recent development work.
+version: 1.0.0
+---
+
+# repr - Developer Context Layer
+
+repr helps developers understand what they've actually worked on by analyzing git history and AI sessions.
+
+## When to Use repr
+
+- User asks about their recent work or changes
+- User wants to generate a story or summary from commits
+- User needs to set up repr for a project
+- User wants to see their development timeline
+- User asks "what did I work on" or similar
+
+## Commands
+
+### Initialize repr
+
+```bash
+# First-time setup - scan for repositories
+repr init
+
+# Scan specific directory
+repr init ~/projects
+```
+
+Use when: User is setting up repr for the first time or adding new repositories.
+
+### Show Changes
+
+```bash
+# Show current changes (unstaged, staged, unpushed)
+repr changes
+
+# Compact view (just file names)
+repr changes --compact
+
+# With LLM synthesis into story format
+repr changes --synthesize
+
+# JSON output
+repr changes --json
+```
+
+Use when: User asks "what are my changes", "show my work", "what's uncommitted", or needs to understand current git state.
+
+### Generate Stories
+
+```bash
+# Generate stories from recent commits
+repr generate
+
+# Generate for specific date range
+repr generate --since monday
+repr generate --since "2 weeks ago"
+
+# Use local LLM (Ollama)
+repr generate --local
+
+# Dry run (preview without saving)
+repr generate --dry-run
+```
+
+Use when: User wants to create narratives from their commits, document their work, or generate content for standup/weekly reports.
+
+### Timeline
+
+```bash
+# Initialize timeline for current project
+repr timeline init
+
+# Initialize with AI session ingestion
+repr timeline init --with-sessions
+
+# Show timeline entries
+repr timeline show
+repr timeline show --days 14
+
+# Filter by type
+repr timeline show --type commit
+repr timeline show --type session
+
+# Show timeline status
+repr timeline status
+
+# Refresh/update timeline
+repr timeline refresh
+
+# Serve timeline viewer in browser
+repr timeline serve
+```
+
+Use when: User wants a unified view of commits and AI sessions, or needs to understand the full context of their development work.
+
+## Output Interpretation
+
+### Changes Output
+- **Unstaged**: Modified files not yet staged (with diff preview)
+- **Staged**: Changes ready to commit
+- **Unpushed**: Commits not yet pushed to remote
+
+### Timeline Entry Types
+- **commit**: Regular git commits
+- **session**: AI coding sessions (Claude Code, etc.)
+- **merged**: Commits with associated AI session context
+
+## Tips
+
+1. Run `repr changes` before committing to see what you're about to commit
+2. Use `repr generate --dry-run` to preview stories before saving
+3. Initialize timeline with `--with-sessions` to capture AI context
+4. Use `repr timeline show --type session` to see AI-assisted work separately
+'''
+
+    skill_file.write_text(skill_content)
+
+    print_success("repr skill installed to Claude Code")
+    console.print()
+    console.print(f"  Plugin: {plugin_dir}")
+    console.print(f"  Skill: {skill_file}")
+    console.print()
+    console.print("Claude Code will now recognize repr commands.")
+    console.print("Try asking: 'show my changes' or 'what did I work on'")
+
+
 # =============================================================================
 # TIMELINE
 # =============================================================================
