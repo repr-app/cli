@@ -306,7 +306,7 @@ class Story(BaseModel):
     # Metadata for filtering/display
     category: str = Field(default="feature", description="feature, bugfix, refactor, perf, infra, docs, test, chore")
     scope: str = Field(default="internal", description="user-facing, internal, platform, ops")
-    technologies: list[str] = Field(default_factory=list, description="Languages, frameworks, tools used")
+    technologies: list[str] = Field(default_factory=list, description="Resume-worthy skills: frameworks, libraries, tools, patterns, cloud services, APIs")
     files: list[str] = Field(default_factory=list, description="Aggregated from commits")
 
     # Timespan
@@ -321,6 +321,7 @@ class Story(BaseModel):
     # implementation_details already exists above - the how
     insight: str = Field(default="", description="Engineering lesson - transferable principle")
     show: str | None = Field(default=None, description="Visual - code block, diagram, before/after")
+    diagram: str | None = Field(default=None, description="ASCII diagram explaining the change visually (architecture, flow, before/after)")
     post_body: str = Field(default="", description="LLM-generated natural post text")
 
     # Legacy fields (for backward compatibility during migration)

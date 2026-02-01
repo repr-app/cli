@@ -25,6 +25,7 @@ from typing import Optional, List, Dict, Callable
 from collections import defaultdict
 
 import typer
+from rich.markup import escape as rich_escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -3162,10 +3163,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Staged changes
@@ -3188,10 +3190,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Unpushed commits
@@ -4133,6 +4136,12 @@ def timeline_show(
                 if story.show:
                     console.print()
                     console.print(f"```\n{story.show}\n```")
+
+                # Diagram if present
+                if story.diagram:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Diagram:[/]")
+                    console.print(f"```\n{story.diagram}\n```")
 
                 # Internal mode: show problem and how
                 if internal:
@@ -5310,6 +5319,7 @@ from typing import Optional, List, Dict, Callable
 from collections import defaultdict
 
 import typer
+from rich.markup import escape as rich_escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -8447,10 +8457,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Staged changes
@@ -8473,10 +8484,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Unpushed commits
@@ -9423,6 +9435,12 @@ def timeline_show(
                 if story.show:
                     console.print()
                     console.print(f"```\n{story.show}\n```")
+
+                # Diagram if present
+                if story.diagram:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Diagram:[/]")
+                    console.print(f"```\n{story.diagram}\n```")
 
                 # Internal mode: show problem and how
                 if internal:

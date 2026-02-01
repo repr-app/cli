@@ -20,7 +20,7 @@ from .storage import REPR_HOME, generate_ulid
 DB_PATH = REPR_HOME / "stories.db"
 
 # Schema version for migrations
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _serialize_json_list(items: list) -> str:
@@ -258,6 +258,10 @@ class ReprDatabase:
             ("value", "''"),
             ("insight", "''"),
             ("show", "NULL"),
+            # v6: post_body
+            ("post_body", "''"),
+            # v7: diagram
+            ("diagram", "NULL"),
         ]
 
         for col, default in required_columns:
@@ -364,6 +368,19 @@ class ReprDatabase:
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                     (6,)
+                )
+
+            # Migration v6 -> v7: Add diagram field
+            if current_version < 7:
+                try:
+                    conn.execute("ALTER TABLE stories ADD COLUMN diagram TEXT DEFAULT NULL")
+                except sqlite3.OperationalError:
+                    # Column already exists
+                    pass
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                    (7,)
                 )
 
             # Ensure schema version is set for fresh databases
@@ -516,10 +533,10 @@ class ReprDatabase:
                     title, problem, approach, tradeoffs, outcome,
                     category, scope, technologies, started_at, ended_at,
                     implementation_details, decisions, lessons,
-                    hook, what, value, insight, show, post_body,
+                    hook, what, value, insight, show, diagram, post_body,
                     public_post, public_show, internal_post, internal_show, internal_details,
                     file_changes, key_snippets, total_insertions, total_deletions
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     title=excluded.title,
@@ -540,6 +557,7 @@ class ReprDatabase:
                     value=excluded.value,
                     insight=excluded.insight,
                     show=excluded.show,
+                    diagram=excluded.diagram,
                     post_body=excluded.post_body,
                     public_post=excluded.public_post,
                     public_show=excluded.public_show,
@@ -574,6 +592,7 @@ class ReprDatabase:
                     story.value,
                     story.insight,
                     story.show,
+                    story.diagram,
                     story.post_body,
                     story.public_post,
                     story.public_show,
@@ -666,6 +685,7 @@ class ReprDatabase:
             value=_get("value", ""),
             insight=_get("insight", ""),
             show=_get("show", None),
+            diagram=_get("diagram", None),
             post_body=_get("post_body", ""),
             # Legacy fields
             public_post=_get("public_post", ""),

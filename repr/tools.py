@@ -502,15 +502,16 @@ def get_commits_by_shas(
         except Exception:
             # Skip invalid SHAs
             continue
-        
+
         # Skip merge commits (commits with more than one parent)
         if len(commit.parents) > 1:
             continue
-        
+
         # Get files changed with diffs
         files = []
         parent = commit.parents[0] if commit.parents else None
-        
+        file_stats = commit.stats.files  # Per-file stats {path: {insertions, deletions, lines}}
+
         try:
             # Get diff for this commit
             if parent:
@@ -518,12 +519,12 @@ def get_commits_by_shas(
             else:
                 # Initial commit - show all files as additions
                 diffs = commit.diff(None, create_patch=True)
-            
+
             for diff_item in list(diffs)[:max_files_per_commit]:
                 file_path = diff_item.b_path or diff_item.a_path
                 if not file_path:
                     continue
-                
+
                 # Get the diff text
                 diff_text = ""
                 if diff_item.diff:
@@ -531,29 +532,37 @@ def get_commits_by_shas(
                         diff_text = diff_item.diff.decode('utf-8', errors='ignore')
                     except:
                         diff_text = str(diff_item.diff)
-                    
+
                     # Truncate diff if too long
                     diff_lines = diff_text.split('\n')
                     if len(diff_lines) > max_diff_lines_per_file:
                         diff_text = '\n'.join(diff_lines[:max_diff_lines_per_file])
                         diff_text += f"\n... ({len(diff_lines) - max_diff_lines_per_file} more lines)"
-                
+
+                # Get per-file insertions/deletions
+                stats = file_stats.get(file_path, {})
+
                 files.append({
                     "path": file_path,
                     "change_type": diff_item.change_type,  # A=added, D=deleted, M=modified, R=renamed
                     "diff": diff_text,
+                    "insertions": stats.get("insertions", 0),
+                    "deletions": stats.get("deletions", 0),
                 })
         except (GitCommandError, Exception):
             # If we can't get diff, just include file list
             for filename in commit.stats.files.keys():
                 if len(files) >= max_files_per_commit:
                     break
+                stats = file_stats.get(filename, {})
                 files.append({
                     "path": filename,
                     "change_type": "M",
                     "diff": "",
+                    "insertions": stats.get("insertions", 0),
+                    "deletions": stats.get("deletions", 0),
                 })
-        
+
         commits.append({
             "sha": commit.hexsha[:8],
             "full_sha": commit.hexsha,
