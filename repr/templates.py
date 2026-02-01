@@ -16,6 +16,8 @@ class StoryOutput(BaseModel):
     """Structured output for a generated story."""
     summary: str = Field(description="One-line technical summary of the work (max 120 chars, no fluff)")
     content: str = Field(description="Full technical description in markdown")
+    # Technologies used in this work
+    technologies: list[str] | None = Field(default=None, description="Languages, frameworks, libraries, tools used (e.g., TypeScript, React, PostgreSQL, Docker)")
     # Categories - all inferred by LLM, nullable for backwards compatibility with older stories
     category: str | None = Field(default=None, description="Work type: feature, bugfix, refactor, perf, infra, docs, test, chore")
     scope: str | None = Field(default=None, description="Impact scope: user-facing, internal, platform, ops")
@@ -49,6 +51,9 @@ Output JSON with:
   Good: "Added JWT refresh token rotation with Redis session store"
   Bad: "Enhanced authentication system with improved security"
 - content: Markdown with technical details. What was built, how, what tech.
+- technologies: Array of languages, frameworks, libraries, tools used.
+  Examples: ["TypeScript", "React", "PostgreSQL", "Docker", "Redis", "GraphQL"]
+  Be specific: "React" not "JavaScript framework", "FastAPI" not "Python web framework"
 
 Rules:
 - Name specific technologies, libraries, patterns
@@ -61,7 +66,7 @@ Rules:
 Commits:
 {commits_summary}
 
-Output JSON with summary and content.""",
+Output JSON with summary, content, and technologies.""",
     },
     
     "changelog": {
@@ -72,6 +77,7 @@ Output JSON with summary and content.""",
 Output JSON with:
 - summary: One line describing the main change (max 120 chars)
 - content: Markdown changelog with categories (Added/Changed/Fixed/Removed)
+- technologies: Array of languages, frameworks, libraries, tools involved in these changes
 
 Rules:
 - List actual changes, not benefits
@@ -82,7 +88,7 @@ Rules:
 Commits:
 {commits_summary}
 
-Output JSON with summary and content.""",
+Output JSON with summary, content, and technologies.""",
     },
     
     "narrative": {
@@ -93,6 +99,7 @@ Output JSON with summary and content.""",
 Output JSON with:
 - summary: One-line description of what was built (max 120 chars)
 - content: Markdown narrative explaining the technical work
+- technologies: Array of specific languages, frameworks, libraries, tools used
 
 Focus on:
 - What problem was solved
@@ -105,7 +112,7 @@ No marketing language. Write like you're explaining to another engineer.""",
 Commits:
 {commits_summary}
 
-Output JSON with summary and content.""",
+Output JSON with summary, content, and technologies.""",
     },
     
     "interview": {
@@ -116,6 +123,7 @@ Output JSON with summary and content.""",
 Output JSON with:
 - summary: One-line technical summary (max 120 chars)
 - content: Markdown with situation/task/action/result format
+- technologies: Array of specific languages, frameworks, libraries, tools used
 
 Focus on:
 - Specific technical decisions made
@@ -128,7 +136,7 @@ No resume language. Be specific about what you actually did.""",
 Commits:
 {commits_summary}
 
-Output JSON with summary and content.""",
+Output JSON with summary, content, and technologies.""",
     },
     
     "context": {
@@ -143,10 +151,11 @@ For each piece of work, capture:
 1. WHAT: One-line summary of what was built/changed
 2. WHY (problem): What problem was this solving? What was broken/slow/missing?
 3. HOW (approach): What strategy/pattern was used? What does the code do?
-4. DECISIONS: Were there alternatives? Why this approach? Format each as "Chose X over Y because Z"
-5. TRADEOFFS: What did you give up? What did you gain?
-6. OUTCOME: Any metrics, before/after, or observable impact?
-7. LESSONS: What gotchas were discovered? What would you tell future-you?
+4. TECHNOLOGIES: What specific languages, frameworks, libraries, tools were used?
+5. DECISIONS: Were there alternatives? Why this approach? Format each as "Chose X over Y because Z"
+6. TRADEOFFS: What did you give up? What did you gain?
+7. OUTCOME: Any metrics, before/after, or observable impact?
+8. LESSONS: What gotchas were discovered? What would you tell future-you?
 
 Write for an AI that will answer questions like:
 - "How does this developer usually handle X?"
@@ -162,6 +171,7 @@ Commits:
 Extract structured context with:
 - summary: One-line technical summary (max 120 chars)
 - content: Full markdown description
+- technologies: Array of languages, frameworks, libraries, tools (e.g., ["TypeScript", "React", "PostgreSQL"])
 - problem: What problem was being solved?
 - approach: What pattern/strategy was used?
 - decisions: List of key decisions (format: "Chose X over Y because Z")

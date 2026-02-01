@@ -574,27 +574,26 @@ def get_repr_store_path(project_path: Path) -> Path:
 
 def save_repr_store(store: "ReprStore", project_path: Path) -> Path:
     """
-    Save ReprStore to .repr/store.json.
-    
+    Save ReprStore to SQLite.
+
+    Note: This function now writes to SQLite only. The .repr/store.json
+    format is deprecated. Use `repr data migrate-db` to import old stores.
+
     Args:
         store: ReprStore to save
         project_path: Project root path
-    
+
     Returns:
-        Path to the saved store file
+        Path to the .repr directory
     """
-    from .models import ReprStore as ReprStoreModel
-    
     repr_dir = project_path / REPR_DIR_NAME
     repr_dir.mkdir(parents=True, exist_ok=True)
-    
-    store_path = repr_dir / STORE_FILE
-    
-    # Serialize using Pydantic
-    store_json = store.model_dump_json(indent=2)
-    _atomic_write(store_path, store_json)
-    
-    return store_path
+
+    # Write to SQLite
+    if store.stories:
+        save_stories_to_db(store.stories, project_path)
+
+    return repr_dir
 
 
 def load_repr_store(project_path: Path) -> "ReprStore | None":
@@ -703,17 +702,186 @@ def update_repr_store_index(store: "ReprStore") -> None:
 def _detect_tech_stack(files: list[str]) -> list[str]:
     """Detect technologies from file extensions."""
     tech = set()
-    
+
     ext_map = {
         '.py': 'Python', '.ts': 'TypeScript', '.tsx': 'React',
         '.js': 'JavaScript', '.jsx': 'React', '.go': 'Go',
         '.rs': 'Rust', '.vue': 'Vue', '.sql': 'SQL',
     }
-    
+
     for f in files:
         for ext, name in ext_map.items():
             if f.endswith(ext):
                 tech.add(name)
-    
+
     return sorted(tech)
+
+
+# ============================================================================
+# SQLite Storage Functions
+# ============================================================================
+
+def save_stories_to_db(stories: list, project_path: Path) -> int:
+    """
+    Save stories to central SQLite database.
+
+    Args:
+        stories: List of Story objects
+        project_path: Path to the project
+
+    Returns:
+        Number of stories saved
+    """
+    from .db import get_db
+
+    db = get_db()
+    project = db.get_project_by_path(project_path)
+
+    if not project:
+        project_id = db.register_project(project_path, project_path.name)
+    else:
+        project_id = project["id"]
+
+    for story in stories:
+        db.save_story(story, project_id)
+
+    return len(stories)
+
+
+def load_stories_from_db(
+    project_path: Path | None = None,
+    category: str | None = None,
+    since: "datetime | None" = None,
+    limit: int = 100,
+) -> list:
+    """
+    Load stories from central SQLite database.
+
+    Args:
+        project_path: Optional project path filter
+        category: Optional category filter
+        since: Optional date filter
+        limit: Maximum stories to return
+
+    Returns:
+        List of Story objects
+    """
+    from .db import get_db
+
+    db = get_db()
+
+    project_id = None
+    if project_path:
+        project = db.get_project_by_path(project_path)
+        if project:
+            project_id = project["id"]
+
+    return db.list_stories(
+        project_id=project_id,
+        category=category,
+        since=since,
+        limit=limit,
+    )
+
+
+def search_stories_in_db(
+    query: str,
+    files: list[str] | None = None,
+    limit: int = 20,
+) -> list:
+    """
+    Search stories using FTS5.
+
+    Args:
+        query: Search query
+        files: Optional file paths to filter by
+        limit: Maximum results
+
+    Returns:
+        List of Story objects
+    """
+    from .db import get_db
+
+    db = get_db()
+    return db.search_stories(query, files=files, limit=limit)
+
+
+def get_story_from_db(story_id: str):
+    """
+    Get a story by ID from SQLite.
+
+    Args:
+        story_id: Story UUID
+
+    Returns:
+        Story object or None
+    """
+    from .db import get_db
+
+    db = get_db()
+    return db.get_story(story_id)
+
+
+def migrate_stores_to_db(
+    project_paths: list[Path] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Migrate existing store.json files to SQLite.
+
+    Args:
+        project_paths: List of project paths to migrate (None = all tracked)
+        dry_run: If True, don't actually write to DB
+
+    Returns:
+        Migration statistics
+    """
+    from .db import get_db
+    from .config import get_tracked_repos
+
+    db = get_db()
+
+    if project_paths is None:
+        # Get all tracked repos
+        tracked = get_tracked_repos()
+        project_paths = [Path(r["path"]) for r in tracked if Path(r["path"]).exists()]
+
+    stats = {
+        "projects_scanned": 0,
+        "projects_migrated": 0,
+        "stories_imported": 0,
+        "errors": [],
+    }
+
+    for project_path in project_paths:
+        stats["projects_scanned"] += 1
+
+        store = load_repr_store(project_path)
+        if not store:
+            continue
+
+        if not store.stories:
+            continue
+
+        if dry_run:
+            stats["projects_migrated"] += 1
+            stats["stories_imported"] += len(store.stories)
+            continue
+
+        try:
+            imported = db.import_from_store(store, project_path)
+            stats["projects_migrated"] += 1
+            stats["stories_imported"] += imported
+        except Exception as e:
+            stats["errors"].append(f"{project_path.name}: {str(e)}")
+
+    return stats
+
+
+def get_db_stats() -> dict:
+    """Get SQLite database statistics."""
+    from .db import get_db
+
+    db = get_db()
+    return db.get_stats()
 

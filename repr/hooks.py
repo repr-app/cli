@@ -516,12 +516,13 @@ def _spawn_background_generate(repo_path: Path) -> None:
     log_file = log_dir / "auto_generate.log"
     
     # Build command - use sys.executable to find repr command
-    # repr generate --repo <path> --local --json
+    # repr generate --weeks 1 --json --batch-size <queue_size>
+    # Note: We rely on default model config for synthesis
     cmd = [
         sys.executable, "-m", "repr",
         "generate",
         "--repo", str(repo_path),
-        "--local",  # Always use local LLM for auto-generation
+        "--days", "7",  # limit context to 1 week for quick update
         "--json",
     ]
     

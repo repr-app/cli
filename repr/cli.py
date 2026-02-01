@@ -111,6 +111,7 @@ app = typer.Typer(
 
 # Sub-apps for command groups
 hooks_app = typer.Typer(help="Manage git post-commit hooks")
+cron_app = typer.Typer(help="Scheduled story generation (every 4h)")
 llm_app = typer.Typer(help="Configure LLM (local/cloud/BYOK)")
 privacy_app = typer.Typer(help="Privacy audit and controls")
 config_app = typer.Typer(help="View and modify configuration")
@@ -120,6 +121,7 @@ mcp_app = typer.Typer(help="MCP server for AI agent integration")
 timeline_app = typer.Typer(help="Unified timeline of commits + AI sessions")
 
 app.add_typer(hooks_app, name="hooks")
+app.add_typer(cron_app, name="cron")
 app.add_typer(llm_app, name="llm")
 app.add_typer(privacy_app, name="privacy")
 app.add_typer(config_app, name="config")
@@ -240,7 +242,65 @@ def init(
         console.print(f"Local LLM: detected {llm_info.name} at {llm_info.url}")
     else:
         console.print(f"[{BRAND_MUTED}]Local LLM: not detected (install Ollama for offline generation)[/]")
-    
+
+    # Ask about automatic story generation
+    console.print()
+    console.print("[bold]Automatic Story Generation[/]")
+    console.print()
+    console.print("How should repr generate stories from your commits?")
+    console.print()
+    console.print(f"  [bold]1.[/] Scheduled (recommended) - Every 4 hours via cron")
+    console.print(f"     [{BRAND_MUTED}]Predictable, batches work, never interrupts[/]")
+    console.print()
+    console.print(f"  [bold]2.[/] On commit - After every 5 commits via git hook")
+    console.print(f"     [{BRAND_MUTED}]Real-time, but needs LLM running during commits[/]")
+    console.print()
+    console.print(f"  [bold]3.[/] Manual only - Run `repr generate` yourself")
+    console.print(f"     [{BRAND_MUTED}]Full control, no automation[/]")
+    console.print()
+
+    schedule_choice = Prompt.ask(
+        "Choose",
+        choices=["1", "2", "3"],
+        default="1",
+    )
+
+    from .hooks import install_hook
+    from .cron import install_cron
+
+    if schedule_choice == "1":
+        # Scheduled via cron
+        result = install_cron(interval_hours=4, min_commits=3)
+        if result["success"]:
+            print_success("Cron job installed (every 4h)")
+            # Install hooks for queue tracking (but disable auto-generate)
+            config = load_config()
+            config["generation"]["auto_generate_on_hook"] = False
+            save_config(config)
+            for repo in repos:
+                install_hook(Path(repo.path))
+                set_repo_hook_status(str(repo.path), True)
+        else:
+            print_warning(f"Could not install cron: {result['message']}")
+            print_info("You can set it up later with `repr cron install`")
+
+    elif schedule_choice == "2":
+        # On-commit via hooks
+        config = load_config()
+        config["generation"]["auto_generate_on_hook"] = True
+        save_config(config)
+        for repo in repos:
+            install_hook(Path(repo.path))
+            set_repo_hook_status(str(repo.path), True)
+        print_success(f"Hooks installed in {len(repos)} repos (generates after 5 commits)")
+
+    else:
+        # Manual only - disable auto-generation
+        config = load_config()
+        config["generation"]["auto_generate_on_hook"] = False
+        save_config(config)
+        print_info("Manual mode - run `repr generate` when you want stories")
+
     console.print()
     print_next_steps([
         "repr week               See what you worked on this week",
@@ -252,6 +312,90 @@ def init(
 # =============================================================================
 # GENERATE
 # =============================================================================
+
+# Technology detection from file extensions
+_TECH_EXTENSIONS = {
+    ".py": "Python",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".js": "JavaScript",
+    ".jsx": "JavaScript",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".swift": "Swift",
+    ".c": "C",
+    ".cpp": "C++",
+    ".h": "C",
+    ".hpp": "C++",
+    ".rb": "Ruby",
+    ".php": "PHP",
+    ".cs": "C#",
+    ".scala": "Scala",
+    ".vue": "Vue",
+    ".svelte": "Svelte",
+    ".sql": "SQL",
+    ".sh": "Shell",
+    ".bash": "Shell",
+    ".yaml": "YAML",
+    ".yml": "YAML",
+    ".json": "JSON",
+    ".graphql": "GraphQL",
+    ".prisma": "Prisma",
+}
+
+# Special file name patterns that indicate technologies
+_TECH_FILES = {
+    "Dockerfile": "Docker",
+    "docker-compose": "Docker",
+    "package.json": "Node.js",
+    "tsconfig.json": "TypeScript",
+    "pyproject.toml": "Python",
+    "requirements.txt": "Python",
+    "Cargo.toml": "Rust",
+    "go.mod": "Go",
+    "Gemfile": "Ruby",
+    "pom.xml": "Maven",
+    "build.gradle": "Gradle",
+    ".eslintrc": "ESLint",
+    "tailwind.config": "Tailwind CSS",
+    "next.config": "Next.js",
+    "vite.config": "Vite",
+    "webpack.config": "Webpack",
+}
+
+
+def _detect_technologies_from_files(files: list[str]) -> list[str]:
+    """
+    Detect technologies from file paths/extensions.
+
+    Args:
+        files: List of file paths
+
+    Returns:
+        Sorted list of detected technology names
+    """
+    tech = set()
+
+    for f in files:
+        # Handle files as either dict with 'path' or string
+        if isinstance(f, dict):
+            f = f.get("path", "")
+
+        # Check extensions
+        for ext, name in _TECH_EXTENSIONS.items():
+            if f.endswith(ext):
+                tech.add(name)
+                break
+
+        # Check special file names
+        for fname, name in _TECH_FILES.items():
+            if fname in f:
+                tech.add(name)
+
+    return sorted(tech)
+
 
 def _parse_date_reference(date_str: str) -> str | None:
     """
@@ -388,7 +532,14 @@ def generate(
         repr generate --template changelog
         repr generate --commits abc123,def456
     """
+    import asyncio
+    from .timeline import extract_commits_from_git, detect_project_root
+    from .story_synthesis import synthesize_stories
+    from .db import get_db
     from .privacy import check_cloud_permission, log_cloud_operation
+
+    def synthesize_stories_sync(*args, **kwargs):
+        return asyncio.run(synthesize_stories(*args, **kwargs))
     
     # Determine mode
     if cloud:
@@ -405,10 +556,16 @@ def generate(
             raise typer.Exit(1)
     
     if not local and not cloud:
-        # Default: local if not signed in, cloud if signed in
-        if is_authenticated() and is_cloud_allowed():
+        # Check config for default mode
+        llm_config = get_llm_config()
+        default_mode = llm_config.get("default", "local")
+
+        if default_mode == "local":
+            local = True
+        elif default_mode == "cloud" and is_authenticated() and is_cloud_allowed():
             cloud = True
         else:
+            # Fallback: local if not signed in or cloud not allowed
             local = True
     
     if not json_output:
@@ -455,201 +612,138 @@ def generate(
     from .tools import get_commits_with_diffs, get_commits_by_shas
     from .discovery import analyze_repo
     
-    total_stories = 0
-    all_stories = []  # Collect all generated stories for JSON output
-    
+    all_generated_stories = []
+
     for repo_path in repo_paths:
-        repo_info = analyze_repo(repo_path)
         if not json_output:
-            console.print(f"[bold]{repo_info.name}[/]")
-        
+            console.print(f"[bold]{repo_path.name}[/]")
+            
+        # Determine commit range
+        repo_commits = []
         if commits:
-            # Specific commits
-            if not json_output:
-                console.print(f"  Collecting specified commits...")
-            commit_shas = [s.strip() for s in commits.split(",")]
-            commit_list = get_commits_by_shas(repo_path, commit_shas)
+             # Specific SHA list filtering
+             repo_commits = extract_commits_from_git(repo_path, days=90)
+             target_shas = [s.strip() for s in commits.split(",")]
+             repo_commits = [c for c in repo_commits if any(c.sha.startswith(t) for t in target_shas)]
+        elif since_date:
+             # Parse date (rough approximation)
+             filter_days = 30
+             if "week" in since_date: filter_days = 14
+             if "month" in since_date: filter_days = 30
+             repo_commits = extract_commits_from_git(repo_path, days=filter_days)
         else:
-            # Determine timeframe
-            timeframe_days = days if days is not None else 90  # Default 90 days
-            since_str = None
-            
-            # Parse natural language date if provided
-            if since_date:
-                since_str = _parse_date_reference(since_date)
-            
-            # Recent commits within timeframe
-            if not json_output:
-                console.print(f"  Scanning commits...")
-            commit_list = get_commits_with_diffs(
-                repo_path, 
-                count=500,  # Higher limit when filtering by time
-                days=timeframe_days,
-                since=since_str,
-            )
-            if not json_output and commit_list:
-                console.print(f"  Found {len(commit_list)} commits")
+             filter_days = days if days else 90
+             repo_commits = extract_commits_from_git(repo_path, days=filter_days)
         
-        if not commit_list:
+        if not repo_commits:
             if not json_output:
-                console.print(f"  [{BRAND_MUTED}]No commits found[/]")
+                console.print(f"  No matching commits found")
             continue
-        
-        # Filter out already-processed commits
-        from .storage import get_processed_commit_shas
-        processed_shas = get_processed_commit_shas(repo_name=repo_info.name)
-        
-        original_count = len(commit_list)
-        commit_list = [c for c in commit_list if c["full_sha"] not in processed_shas]
-        
-        if not json_output and processed_shas:
-            skipped_count = original_count - len(commit_list)
-            if skipped_count > 0:
-                console.print(f"  [{BRAND_MUTED}]Skipping {skipped_count} already-processed commits[/]")
-        
-        if not commit_list:
-            if not json_output:
-                console.print(f"  [{BRAND_MUTED}]All commits already processed[/]")
-            continue
-        
-        # Dry run: show what would be sent
-        if dry_run:
-            from .openai_analysis import estimate_tokens, get_batch_size
-            from .config import load_config
-
-            config = load_config()
-            max_commits = config.get("generation", {}).get("max_commits_per_batch", 50)
-            token_limit = config.get("generation", {}).get("token_limit", 100000)
-
-            console.print(f"  [bold]Dry Run Preview[/]")
-            console.print(f"  Commits to analyze: {len(commit_list)}")
-            console.print(f"  Template: {template}")
-            console.print()
-
-            # Estimate tokens
-            estimated_tokens = estimate_tokens(commit_list)
-            console.print(f"  Estimated tokens: ~{estimated_tokens:,}")
-
-            # Check if we need to split into batches
-            if len(commit_list) > max_commits:
-                num_batches = (len(commit_list) + max_commits - 1) // max_commits
-                console.print()
-                console.print(f"  ⚠ {len(commit_list)} commits exceeds {max_commits}-commit limit")
-                console.print()
-                console.print(f"  Will split into {num_batches} batches:")
-                for batch_num in range(num_batches):
-                    start = batch_num * max_commits + 1
-                    end = min((batch_num + 1) * max_commits, len(commit_list))
-                    batch_commits = commit_list[batch_num * max_commits:end]
-                    batch_tokens = estimate_tokens(batch_commits)
-                    console.print(f"    Batch {batch_num + 1}: commits {start}-{end} (est. {batch_tokens // 1000}k tokens)")
-
-            console.print()
-            console.print("  Sample commits:")
-            for c in commit_list[:5]:
-                console.print(f"    • {c['sha'][:7]} {c['message'][:50]}")
-            if len(commit_list) > 5:
-                console.print(f"    ... and {len(commit_list) - 5} more")
-            continue
-        
-        # Check token limits and prompt user if needed
-        from .openai_analysis import estimate_tokens
-        from .config import load_config
-
-        config = load_config()
-        max_commits = config.get("generation", {}).get("max_commits_per_batch", 50)
-        token_limit = config.get("generation", {}).get("token_limit", 100000)
-
-        # Check if we exceed limits (only warn for cloud generation)
-        if cloud and len(commit_list) > max_commits:
-            num_batches = (len(commit_list) + max_commits - 1) // max_commits
-            console.print()
-            console.print(f"  ⚠ {len(commit_list)} commits exceeds {max_commits}-commit limit")
-            console.print()
-            console.print(f"  Will split into {num_batches} batches:")
-            for batch_num in range(num_batches):
-                start = batch_num * max_commits + 1
-                end = min((batch_num + 1) * max_commits, len(commit_list))
-                batch_commits = commit_list[batch_num * max_commits:end]
-                batch_tokens = estimate_tokens(batch_commits)
-                console.print(f"    Batch {batch_num + 1}: commits {start}-{end} (est. {batch_tokens // 1000}k tokens)")
-            console.print()
-
-            if not confirm("Continue with generation?"):
-                console.print(f"  [{BRAND_MUTED}]Skipped {repo_info.name}[/]")
-                continue
-
-        # Calculate number of batches for progress
-        num_batches = (len(commit_list) + batch_size - 1) // batch_size
-        
-        # Generate stories with progress tracking
-        if not json_output and num_batches > 1:
-            # Use progress bar for multiple batches
-            with BatchProgress(num_batches, f"Analyzing {repo_info.name}") as progress:
-                def on_progress(batch_num, total, status):
-                    if status == "complete":
-                        progress.update(1, f"batch {batch_num}/{total}")
-                
-                stories = _generate_stories(
-                    commits=commit_list,
-                    repo_info=repo_info,
-                    batch_size=batch_size,
-                    local=local,
-                    template=template,
-                    custom_prompt=prompt,
-                    progress_callback=on_progress,
-                )
-        else:
-            # Single batch or JSON mode - no progress bar needed
-            if not json_output and num_batches == 1:
-                console.print(f"  Analyzing {len(commit_list)} commits...")
             
-            stories = _generate_stories(
-                commits=commit_list,
-                repo_info=repo_info,
-                batch_size=batch_size,
-                local=local,
-                template=template,
-                custom_prompt=prompt,
-            )
-        
-        for story in stories:
-            if not json_output:
-                console.print(f"  • {story['summary']}")
-            total_stories += 1
-            all_stories.append(story)
-        
-        # Log cloud operation if using cloud
-        if cloud and stories:
-            log_cloud_operation(
-                operation="cloud_generation",
-                destination="repr.dev",
-                payload_summary={
-                    "repo": repo_info.name,
-                    "commits": len(commit_list),
-                    "stories_generated": len(stories),
-                },
-                bytes_sent=len(str(commit_list)) // 2,  # Rough estimate
-            )
-        
         if not json_output:
-            console.print()
-    
+             console.print(f"  Analyzing {len(repo_commits)} commits...")
+
+        # Progress callback
+        def progress(current: int, total: int) -> None:
+             if not json_output:
+                 console.print(f"  Batch {current}/{total}")
+
+        # Determine model based on mode
+        if local:
+            llm_config = get_llm_config()
+            model = llm_config.get("local_model") or "llama3.2"
+        else:
+            model = None  # Use default cloud model
+
+        try:
+            # Run synthesis sync
+            stories, index = synthesize_stories_sync(
+                commits=repo_commits,
+                model=model,
+                batch_size=batch_size,
+                progress_callback=progress,
+            )
+
+            # Generate public/internal posts for each story
+            if stories and not dry_run:
+                from .story_synthesis import transform_story_for_feed_sync, _build_fallback_post
+
+                if not json_output:
+                    console.print(f"  Generating build log posts...")
+
+                for story in stories:
+                    try:
+                        # Generate Tripartite Codex content (internal includes all fields)
+                        result = transform_story_for_feed_sync(story, mode="internal")
+
+                        # Store structured fields
+                        story.hook = result.hook
+                        story.what = result.what
+                        story.value = result.value
+                        story.insight = result.insight
+                        story.show = result.show
+
+                        # Internal-specific fields
+                        if hasattr(result, 'problem') and result.problem:
+                            story.problem = result.problem
+                        if hasattr(result, 'how') and result.how:
+                            story.implementation_details = result.how
+
+                        # Legacy fields for backward compatibility
+                        story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+                        story.internal_post = story.public_post
+                        story.public_show = result.show
+                        story.internal_show = result.show
+                    except Exception as e:
+                        # Fallback: build from story data
+                        from .story_synthesis import _build_fallback_codex
+                        result = _build_fallback_codex(story, "internal")
+                        story.hook = result.hook
+                        story.what = result.what
+                        story.value = result.value
+                        story.insight = result.insight
+                        story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+                        story.internal_post = story.public_post
+
+            # Save to SQLite
+            if not dry_run and stories:
+                db = get_db()
+                project_id = db.register_project(repo_path, repo_path.name)
+
+                for story in stories:
+                    db.save_story(story, project_id)
+
+                # Update freshness with latest commit
+                if repo_commits:
+                    latest_commit = repo_commits[0]  # Already sorted by date desc
+                    db.update_freshness(
+                        project_id,
+                        latest_commit.sha,
+                        latest_commit.timestamp,
+                    )
+
+                if not json_output:
+                    print_success(f"Saved {len(stories)} stories to SQLite")
+            else:
+                 if not json_output:
+                     print_info("Dry run - not saved")
+
+            all_generated_stories.extend(stories)
+
+        except Exception as e:
+            if not json_output:
+                print_error(f"Failed to generate for {repo_path.name}: {e}")
+
     if json_output:
-        print(json.dumps({"generated": total_stories, "stories": all_stories}, indent=2, default=str))
-        return
-    
-    if dry_run:
+        print(json.dumps({
+            "success": True, 
+            "stories_count": len(all_generated_stories),
+            "stories": [s.model_dump(mode="json") for s in all_generated_stories]
+        }, default=str)) 
+    elif all_generated_stories:
         console.print()
-        console.print("Continue with generation? (run without --dry-run)")
-    else:
-        print_success(f"Generated {total_stories} stories")
-        console.print()
-        console.print(f"Stories saved to: {STORIES_DIR}")
-        print_next_steps([
-            "repr stories            View your stories",
-            "repr push               Publish to repr.dev (requires login)",
-        ])
+        print_success(f"Generated {len(all_generated_stories)} stories")
+        print_info("Run `repr timeline serve` to view")
 
 
 async def _generate_stories_async(
@@ -752,6 +846,15 @@ async def _generate_stories_async(
                     if not content or content.startswith("[Batch"):
                         continue
 
+                    # Get technologies from LLM output, fallback to file-based detection
+                    technologies = story_output.technologies or []
+                    if not technologies:
+                        # Detect from files in this batch
+                        all_files = []
+                        for c in batch:
+                            all_files.extend(c.get("files", []))
+                        technologies = _detect_technologies_from_files(all_files)
+
                     metadata = {
                         "summary": summary,
                         "repo_name": repo_info.name,
@@ -765,6 +868,8 @@ async def _generate_stories_async(
                         "generated_locally": local,
                         "template": template,
                         "needs_review": False,
+                        # Technologies
+                        "technologies": technologies,
                         # Categories
                         "category": story_output.category,
                         "scope": story_output.scope,
@@ -1738,6 +1843,138 @@ def hooks_queue(
 
 
 # =============================================================================
+# CRON SCHEDULING
+# =============================================================================
+
+@cron_app.command("install")
+def cron_install(
+    interval: int = typer.Option(4, "--interval", "-i", help="Hours between runs (default: 4)"),
+    min_commits: int = typer.Option(3, "--min-commits", "-m", help="Minimum commits to trigger generation"),
+):
+    """
+    Install cron job for automatic story generation.
+
+    Runs every 4 hours by default, only generating if there are
+    enough commits in the queue.
+
+    Example:
+        repr cron install
+        repr cron install --interval 6 --min-commits 5
+    """
+    from .cron import install_cron
+
+    result = install_cron(interval, min_commits)
+
+    if result["success"]:
+        if result["already_installed"]:
+            print_success(result["message"])
+        else:
+            print_success(result["message"])
+            console.print()
+            console.print(f"[{BRAND_MUTED}]Stories will generate every {interval}h when queue has ≥{min_commits} commits[/]")
+            console.print(f"[{BRAND_MUTED}]Logs: ~/.repr/logs/cron.log[/]")
+    else:
+        print_error(result["message"])
+        raise typer.Exit(1)
+
+
+@cron_app.command("remove")
+def cron_remove():
+    """
+    Remove cron job for story generation.
+
+    Example:
+        repr cron remove
+    """
+    from .cron import remove_cron
+
+    result = remove_cron()
+
+    if result["success"]:
+        print_success(result["message"])
+    else:
+        print_error(result["message"])
+        raise typer.Exit(1)
+
+
+@cron_app.command("pause")
+def cron_pause():
+    """
+    Pause cron job without removing it.
+
+    Example:
+        repr cron pause
+    """
+    from .cron import pause_cron
+
+    result = pause_cron()
+
+    if result["success"]:
+        print_success(result["message"])
+        console.print(f"[{BRAND_MUTED}]Use `repr cron resume` to re-enable[/]")
+    else:
+        print_error(result["message"])
+        raise typer.Exit(1)
+
+
+@cron_app.command("resume")
+def cron_resume():
+    """
+    Resume paused cron job.
+
+    Example:
+        repr cron resume
+    """
+    from .cron import resume_cron
+
+    result = resume_cron()
+
+    if result["success"]:
+        print_success(result["message"])
+    else:
+        print_error(result["message"])
+        raise typer.Exit(1)
+
+
+@cron_app.command("status")
+def cron_status(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show cron job status.
+
+    Example:
+        repr cron status
+    """
+    from .cron import get_cron_status
+
+    status = get_cron_status()
+
+    if json_output:
+        print(json.dumps(status, indent=2))
+        return
+
+    console.print("[bold]Cron Status[/]")
+    console.print()
+
+    if not status["installed"]:
+        console.print(f"[{BRAND_MUTED}]○[/] Not installed")
+        console.print()
+        console.print(f"[{BRAND_MUTED}]Run `repr cron install` to enable scheduled generation[/]")
+        return
+
+    if status["paused"]:
+        console.print(f"[{BRAND_WARNING}]⏸[/] Paused")
+        console.print(f"  [{BRAND_MUTED}]Interval: every {status['interval_hours']}h[/]")
+        console.print()
+        console.print(f"[{BRAND_MUTED}]Run `repr cron resume` to re-enable[/]")
+    else:
+        console.print(f"[{BRAND_SUCCESS}]✓[/] Active")
+        console.print(f"  [{BRAND_MUTED}]Interval: every {status['interval_hours']}h[/]")
+        console.print(f"  [{BRAND_MUTED}]Logs: ~/.repr/logs/cron.log[/]")
+
+
+# =============================================================================
 # LLM CONFIGURATION
 # =============================================================================
 
@@ -1747,7 +1984,7 @@ def llm_add(
 ):
     """
     Configure a BYOK provider.
-    
+
     Example:
         repr llm add openai
     """
@@ -2344,17 +2581,198 @@ def data_restore(
 def data_clear_cache():
     """
     Clear local cache.
-    
+
     Example:
         repr data clear-cache
     """
     from .config import clear_cache, get_cache_size
-    
+
     size = get_cache_size()
     clear_cache()
     print_success(f"Cache cleared ({format_bytes(size)} freed)")
     console.print("  Stories preserved")
     console.print("  Config preserved")
+
+
+@data_app.command("migrate-db")
+def data_migrate_db(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be migrated"),
+    project: Optional[Path] = typer.Option(None, "--project", "-p", help="Migrate specific project"),
+):
+    """
+    Migrate store.json files to central SQLite database.
+
+    This command imports existing .repr/store.json files into the central
+    SQLite database at ~/.repr/stories.db for faster queries.
+
+    Example:
+        repr data migrate-db              # Migrate all tracked repos
+        repr data migrate-db --dry-run    # Preview migration
+        repr data migrate-db -p /path/to/repo
+    """
+    from .storage import migrate_stores_to_db, get_db_stats
+
+    project_paths = [project] if project else None
+
+    with create_spinner("Migrating stories to SQLite...") as progress:
+        task = progress.add_task("migrating", total=None)
+
+        if dry_run:
+            console.print("[bold]Dry run mode - no changes will be made[/]\n")
+
+        stats = migrate_stores_to_db(project_paths=project_paths, dry_run=dry_run)
+
+        progress.update(task, completed=True)
+
+    console.print()
+    console.print(f"Projects scanned: {stats['projects_scanned']}")
+    console.print(f"Projects migrated: {stats['projects_migrated']}")
+    console.print(f"Stories imported: {stats['stories_imported']}")
+
+    if stats['errors']:
+        console.print()
+        print_warning(f"{len(stats['errors'])} errors:")
+        for error in stats['errors'][:5]:
+            console.print(f"  • {error}")
+        if len(stats['errors']) > 5:
+            console.print(f"  ... and {len(stats['errors']) - 5} more")
+
+    if not dry_run and stats['stories_imported'] > 0:
+        console.print()
+        db_stats = get_db_stats()
+        console.print(f"Database: {db_stats['db_path']}")
+        console.print(f"Total stories: {db_stats['story_count']}")
+        console.print(f"Database size: {format_bytes(db_stats['db_size_bytes'])}")
+
+
+@data_app.command("db-stats")
+def data_db_stats():
+    """
+    Show SQLite database statistics.
+
+    Example:
+        repr data db-stats
+    """
+    from .storage import get_db_stats
+    from .db import DB_PATH
+
+    if not DB_PATH.exists():
+        print_info("No SQLite database yet.")
+        print_info("Run `repr data migrate-db` to create one.")
+        return
+
+    stats = get_db_stats()
+
+    console.print("[bold]SQLite Database Stats[/]")
+    console.print()
+    console.print(f"Path: {stats['db_path']}")
+    console.print(f"Size: {format_bytes(stats['db_size_bytes'])}")
+    console.print()
+    console.print(f"Stories: {stats['story_count']}")
+    console.print(f"Projects: {stats['project_count']}")
+    console.print(f"Unique files: {stats['unique_files']}")
+    console.print(f"Unique commits: {stats['unique_commits']}")
+
+    if stats['categories']:
+        console.print()
+        console.print("[bold]By Category:[/]")
+        for cat, count in sorted(stats['categories'].items(), key=lambda x: -x[1]):
+            console.print(f"  {cat}: {count}")
+
+
+@data_app.command("clear")
+def data_clear(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """
+    Clear all stories from database and storage.
+
+    This permanently deletes:
+    - All stories from the SQLite database
+    - All story files from ~/.repr/stories/
+
+    Projects registry and config are preserved.
+
+    Example:
+        repr data clear           # With confirmation
+        repr data clear --force   # Skip confirmation
+    """
+    from .db import DB_PATH
+    from .storage import STORIES_DIR
+    import shutil
+
+    # Check what exists
+    db_exists = DB_PATH.exists()
+    stories_dir_exists = STORIES_DIR.exists()
+
+    if not db_exists and not stories_dir_exists:
+        print_info("Nothing to clear - no database or stories found.")
+        return
+
+    # Count what we're about to delete
+    story_count = 0
+    db_size = 0
+    stories_file_count = 0
+
+    if db_exists:
+        from .storage import get_db_stats
+        try:
+            stats = get_db_stats()
+            story_count = stats.get('story_count', 0)
+            db_size = stats.get('db_size_bytes', 0)
+        except Exception:
+            db_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+
+    if stories_dir_exists:
+        stories_file_count = len(list(STORIES_DIR.glob("*")))
+
+    # Show what will be deleted
+    console.print("[bold red]This will permanently delete:[/]")
+    console.print()
+    if db_exists:
+        console.print(f"  • Database: {DB_PATH}")
+        console.print(f"    {story_count} stories, {format_bytes(db_size)}")
+    if stories_dir_exists and stories_file_count > 0:
+        console.print(f"  • Story files: {STORIES_DIR}")
+        console.print(f"    {stories_file_count} files")
+    console.print()
+    console.print("[dim]Projects registry and config will be preserved.[/]")
+    console.print()
+
+    if not force:
+        if not confirm("Are you sure you want to delete all stories?"):
+            print_info("Cancelled")
+            raise typer.Exit()
+
+    # Delete database
+    if db_exists:
+        try:
+            # Also delete WAL and SHM files if they exist
+            DB_PATH.unlink()
+            wal_path = DB_PATH.with_suffix(".db-wal")
+            shm_path = DB_PATH.with_suffix(".db-shm")
+            if wal_path.exists():
+                wal_path.unlink()
+            if shm_path.exists():
+                shm_path.unlink()
+        except Exception as e:
+            print_error(f"Failed to delete database: {e}")
+            raise typer.Exit(1)
+
+    # Delete stories directory contents (but keep the directory)
+    if stories_dir_exists:
+        try:
+            shutil.rmtree(STORIES_DIR)
+            STORIES_DIR.mkdir(exist_ok=True)
+        except Exception as e:
+            print_error(f"Failed to clear stories directory: {e}")
+            raise typer.Exit(1)
+
+    print_success("All stories cleared")
+    if db_exists:
+        console.print(f"  Deleted: {story_count} stories from database")
+    if stories_file_count > 0:
+        console.print(f"  Deleted: {stories_file_count} story files")
 
 
 # =============================================================================
@@ -2592,6 +3010,182 @@ def status(
         print_info("Run `repr login` to enable cloud sync")
     elif unpushed > 0:
         print_info(f"Run `repr push` to publish {unpushed} stories")
+
+
+@app.command()
+def changes(
+    path: Optional[Path] = typer.Argument(
+        None,
+        help="Path to repository (default: current directory)",
+        exists=True,
+        resolve_path=True,
+    ),
+    synthesize: bool = typer.Option(False, "--synthesize", "-s", help="Use LLM to synthesize changes into story format"),
+    compact: bool = typer.Option(False, "--compact", "-c", help="Compact output (no diff previews)"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show file changes across git states with diff details.
+
+    Displays changes in three states:
+    - Unstaged: Tracked files modified but not staged (with diff preview)
+    - Staged: Changes ready to commit (with diff preview)
+    - Unpushed: Commits not yet pushed to remote
+
+    Example:
+        repr changes              # Show changes with diffs
+        repr changes --compact    # Just file names
+        repr changes --synthesize # LLM summary
+        repr changes --json
+    """
+    from .change_synthesis import (
+        get_change_report,
+        ChangeState,
+        synthesize_changes,
+    )
+
+    target_path = path or Path.cwd()
+    report = get_change_report(target_path)
+
+    if not report:
+        print_error(f"Not a git repository: {target_path}")
+        raise typer.Exit(1)
+
+    if json_output:
+        data = {
+            "repo_path": str(report.repo_path),
+            "timestamp": report.timestamp.isoformat(),
+            "unstaged": [
+                {
+                    "path": f.path,
+                    "change_type": f.change_type,
+                    "insertions": f.insertions,
+                    "deletions": f.deletions,
+                }
+                for f in report.unstaged
+            ],
+            "staged": [
+                {
+                    "path": f.path,
+                    "change_type": f.change_type,
+                    "insertions": f.insertions,
+                    "deletions": f.deletions,
+                }
+                for f in report.staged
+            ],
+            "unpushed": [
+                {
+                    "sha": c.sha,
+                    "message": c.message,
+                    "author": c.author,
+                    "timestamp": c.timestamp.isoformat(),
+                    "files": [{"path": f.path, "change_type": f.change_type} for f in c.files],
+                }
+                for c in report.unpushed
+            ],
+        }
+        if report.summary:
+            data["summary"] = {
+                "hook": report.summary.hook,
+                "what": report.summary.what,
+                "value": report.summary.value,
+                "problem": report.summary.problem,
+                "insight": report.summary.insight,
+                "show": report.summary.show,
+            }
+        print(json.dumps(data, indent=2))
+        return
+
+    if not report.has_changes:
+        print_info("No changes detected.")
+        console.print(f"[{BRAND_MUTED}]Working tree clean, nothing staged, up to date with remote.[/]")
+        raise typer.Exit()
+
+    # Header
+    console.print(f"[bold]Changes in {report.repo_path.name}[/]")
+    console.print()
+
+    # Unstaged changes
+    if report.unstaged:
+        console.print(f"[bold][{BRAND_WARNING}]Unstaged[/][/] ({len(report.unstaged)} files)")
+        for f in report.unstaged:
+            type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
+            stats = ""
+            if f.insertions or f.deletions:
+                stats = f" [{BRAND_SUCCESS}]+{f.insertions}[/][{BRAND_ERROR}]-{f.deletions}[/]"
+            full_path = report.repo_path / f.path
+            console.print(f"  {type_icon} {full_path}{stats}")
+            # Show diff preview unless compact mode
+            if not compact and f.diff_preview:
+                for line in f.diff_preview.split("\n")[:10]:
+                    if line.startswith("+"):
+                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                    elif line.startswith("-"):
+                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+        console.print()
+
+    # Staged changes
+    if report.staged:
+        console.print(f"[bold][{BRAND_SUCCESS}]Staged[/][/] ({len(report.staged)} files)")
+        for f in report.staged:
+            type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
+            stats = ""
+            if f.insertions or f.deletions:
+                stats = f" [{BRAND_SUCCESS}]+{f.insertions}[/][{BRAND_ERROR}]-{f.deletions}[/]"
+            full_path = report.repo_path / f.path
+            console.print(f"  {type_icon} {full_path}{stats}")
+            # Show diff preview unless compact mode
+            if not compact and f.diff_preview:
+                for line in f.diff_preview.split("\n")[:10]:
+                    if line.startswith("+"):
+                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                    elif line.startswith("-"):
+                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+        console.print()
+
+    # Unpushed commits
+    if report.unpushed:
+        console.print(f"[bold][{BRAND_PRIMARY}]Unpushed[/][/] ({len(report.unpushed)} commits)")
+        for commit in report.unpushed:
+            console.print(f"  [{BRAND_MUTED}]{commit.sha}[/] {commit.message}")
+            # Show files changed in this commit
+            for f in commit.files[:5]:
+                type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
+                full_path = report.repo_path / f.path
+                console.print(f"    {type_icon} {full_path}")
+            if len(commit.files) > 5:
+                console.print(f"    [{BRAND_MUTED}]... +{len(commit.files) - 5} more[/]")
+        console.print()
+
+    # Synthesize if requested
+    if synthesize:
+        from .openai_analysis import get_openai_client
+
+        client = get_openai_client()
+        if not client:
+            print_error("LLM not configured. Run `repr llm setup` first.")
+            raise typer.Exit(1)
+
+        with create_spinner("Synthesizing changes..."):
+            summary = asyncio.run(synthesize_changes(report, client))
+            report.summary = summary
+
+        console.print("[bold]Summary[/]")
+        console.print()
+        if summary.hook:
+            console.print(f"[bold]Hook:[/] {summary.hook}")
+        if summary.what:
+            console.print(f"[bold]What:[/] {summary.what}")
+        if summary.value:
+            console.print(f"[bold]Value:[/] {summary.value}")
+        if summary.problem:
+            console.print(f"[bold]Problem:[/] {summary.problem}")
+        if summary.insight:
+            console.print(f"[bold]Insight:[/] {summary.insight}")
+        if summary.show:
+            console.print()
+            console.print("[bold]Show:[/]")
+            console.print(summary.show)
 
 
 @app.command()
@@ -3120,12 +3714,9 @@ def timeline_status(
 
 @timeline_app.command("show")
 def timeline_show(
-    path: Optional[Path] = typer.Argument(
+    path: Optional[str] = typer.Argument(
         None,
-        help="Project path (default: current directory)",
-        exists=True,
-        dir_okay=True,
-        resolve_path=True,
+        help="Project path (use '.' for current repo, omit for all repos)",
     ),
     days: int = typer.Option(
         7, "--days", "-d",
@@ -3143,14 +3734,37 @@ def timeline_show(
         False, "--json",
         help="Output as JSON",
     ),
+    public: bool = typer.Option(
+        True, "--public/--no-public",
+        help="Build-in-public feed format (default)",
+    ),
+    internal: bool = typer.Option(
+        False, "--internal",
+        help="Show technical details in feed",
+    ),
+    raw: bool = typer.Option(
+        False, "--raw",
+        help="Show raw timeline entries (commits/sessions)",
+    ),
+    all_repos: bool = typer.Option(
+        False, "--all", "-a",
+        help="Show stories from all tracked repos (default when no path given)",
+    ),
+    group: bool = typer.Option(
+        False, "--group", "-g",
+        help="Group stories by project (presentation view)",
+    ),
 ):
     """
     Show timeline entries.
-    
+
     Examples:
-        repr timeline show                    # Last 7 days
-        repr timeline show --days 30          # Last 30 days
-        repr timeline show --type merged      # Only merged entries
+        repr timeline show                    # All tracked repos from database
+        repr timeline show .                  # Current repo only
+        repr timeline show /path/to/repo      # Specific repo
+        repr timeline show --group            # All repos, grouped by project
+        repr timeline show . --days 30        # Current repo, last 30 days
+        repr timeline show --internal         # Feed format with tech details
     """
     from datetime import timezone
     from .timeline import (
@@ -3160,63 +3774,254 @@ def timeline_show(
         query_timeline,
     )
     from .models import TimelineEntryType
-    
-    # Determine project path
-    project_path = path or Path.cwd()
-    repo_root = detect_project_root(project_path)
-    
-    if not repo_root:
-        print_error(f"Not a git repository: {project_path}")
-        raise typer.Exit(1)
-    
-    project_path = repo_root
-    
-    if not is_initialized(project_path):
-        print_warning(f"Timeline not initialized for {project_path.name}")
-        print_info("Run: repr timeline init")
-        raise typer.Exit(1)
-    
-    timeline = load_timeline(project_path)
-    if not timeline:
-        print_error("Failed to load timeline")
-        raise typer.Exit(1)
-    
-    # Parse entry type filter
-    entry_types = None
-    if entry_type:
-        try:
-            entry_types = [TimelineEntryType(entry_type)]
-        except ValueError:
-            print_error(f"Invalid type: {entry_type}")
-            print_info("Valid types: commit, session, merged")
-            raise typer.Exit(1)
-    
-    # Query entries
+    from .db import get_db
+
+    db = get_db()
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    entries = query_timeline(timeline, since=since, entry_types=entry_types)
-    entries = entries[-limit:]  # Take most recent
-    
+
+    # Determine mode: all repos (no path) vs specific repo (path given)
+    show_all_repos = path is None and not raw
+
+    # If --all flag is given, always show all repos
+    if all_repos:
+        show_all_repos = True
+
+    project_path = None
+    timeline = None
+    entries = []
+
+    if not show_all_repos:
+        # Specific repo mode - resolve path
+        resolved_path = Path(path) if path else Path.cwd()
+        if not resolved_path.is_absolute():
+            resolved_path = Path.cwd() / resolved_path
+        resolved_path = resolved_path.resolve()
+
+        repo_root = detect_project_root(resolved_path)
+
+        if not repo_root:
+            print_error(f"Not a git repository: {resolved_path}")
+            raise typer.Exit(1)
+
+        project_path = repo_root
+
+        if not is_initialized(project_path):
+            print_warning(f"Timeline not initialized for {project_path.name}")
+            print_info("Run: repr timeline init")
+            raise typer.Exit(1)
+
+        timeline = load_timeline(project_path)
+        if not timeline:
+            print_error("Failed to load timeline")
+            raise typer.Exit(1)
+
+        # Parse entry type filter
+        entry_types = None
+        if entry_type:
+            try:
+                entry_types = [TimelineEntryType(entry_type)]
+            except ValueError:
+                print_error(f"Invalid type: {entry_type}")
+                print_info("Valid types: commit, session, merged")
+                raise typer.Exit(1)
+
+        # Query entries
+        entries = query_timeline(timeline, since=since, entry_types=entry_types)
+        entries = entries[-limit:]  # Take most recent
+
     if json_output:
-        from .timeline import _serialize_entry
-        print(json.dumps({
-            "project": str(project_path),
-            "entries": [_serialize_entry(e) for e in entries],
-        }, indent=2))
+        if show_all_repos:
+            # JSON output for all repos
+            stories = db.list_stories(since=since, limit=limit)
+            print(json.dumps({
+                "mode": "all_repos",
+                "stories": [{"id": s.id, "title": s.title, "project_id": s.project_id} for s in stories],
+            }, indent=2))
+        else:
+            from .timeline import _serialize_entry
+            print(json.dumps({
+                "project": str(project_path),
+                "entries": [_serialize_entry(e) for e in entries],
+            }, indent=2))
         return
-    
-    if not entries:
+
+    if not show_all_repos and not entries:
         print_info(f"No entries in the last {days} days")
         return
-    
+
+    # Feed format (default, unless --raw)
+    if not raw:
+        # Build project lookup
+        projects = {p["id"]: p["name"] for p in db.list_projects()}
+
+        if show_all_repos:
+            # Show stories from all repos
+            stories = db.list_stories(since=since, limit=limit)
+            header_name = "all repos"
+        else:
+            # Show stories from current repo only
+            project = db.get_project_by_path(project_path)
+
+            if not project:
+                print_info(f"No stories found. Run 'repr generate' first.")
+                return
+
+            stories = db.list_stories(project_id=project["id"], since=since, limit=limit)
+            header_name = project_path.name
+
+        if not stories:
+            print_info(f"No stories in the last {days} days. Run 'repr generate' first.")
+            return
+
+        def format_rel_time(story_time):
+            """Format timestamp as relative time."""
+            local_time = story_time.astimezone()
+            now = datetime.now(local_time.tzinfo)
+            delta = now - local_time
+
+            if delta.days == 0:
+                if delta.seconds < 3600:
+                    return f"{delta.seconds // 60}m ago"
+                else:
+                    return f"{delta.seconds // 3600}h ago"
+            elif delta.days == 1:
+                return "Yesterday"
+            elif delta.days < 7:
+                return f"{delta.days} days ago"
+            else:
+                return local_time.strftime("%b %d")
+
+        def render_story(story, show_repo=False):
+            """Render a single story entry using Tripartite Codex structure."""
+            story_time = story.started_at or story.created_at
+            rel_time = format_rel_time(story_time)
+            repo_name = projects.get(story.project_id, "unknown")
+
+            # Header with time and optional repo
+            if show_repo:
+                console.print(f"[{BRAND_PRIMARY}]{repo_name}[/] · [{BRAND_MUTED}]{rel_time}[/]")
+            else:
+                console.print(f"[{BRAND_MUTED}]{rel_time}[/]")
+
+            # Use structured fields if available, fall back to legacy
+            if story.hook:
+                # New Tripartite Codex format
+                console.print(f"[bold]{story.hook}[/]")
+                console.print()
+                what_text = story.what.rstrip(".")
+                console.print(f"{what_text}. {story.value}")
+
+                # Show block if present
+                if story.show:
+                    console.print()
+                    console.print(f"```\n{story.show}\n```")
+
+                # Internal mode: show problem and how
+                if internal:
+                    if story.problem:
+                        console.print()
+                        console.print(f"[{BRAND_MUTED}]Problem:[/] {story.problem}")
+
+                    if story.implementation_details:
+                        console.print()
+                        console.print(f"[{BRAND_MUTED}]How:[/]")
+                        for detail in story.implementation_details[:5]:
+                            console.print(f"  [{BRAND_MUTED}]›[/] {detail}")
+
+                # Insight
+                if story.insight:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Insight:[/] {story.insight}")
+
+            else:
+                # Legacy format fallback
+                post_text = story.public_post or story.title
+                if internal:
+                    post_text = story.internal_post or post_text
+                console.print(post_text)
+
+                show_block = story.show or story.public_show
+                if internal:
+                    show_block = show_block or story.internal_show
+                if show_block:
+                    console.print()
+                    console.print(f"```\n{show_block}\n```")
+
+                if internal and story.internal_details:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Implementation:[/]")
+                    for detail in story.internal_details[:5]:
+                        console.print(f"  [{BRAND_MUTED}]›[/] {detail}")
+
+            # Recall data (internal mode only) - file changes and snippets
+            if internal:
+                # File changes summary
+                if story.file_changes:
+                    total_changes = f"+{story.total_insertions}/-{story.total_deletions}" if (story.total_insertions or story.total_deletions) else ""
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Files changed ({len(story.file_changes)})[/] [{BRAND_MUTED}]{total_changes}[/]")
+                    for fc in story.file_changes[:8]:  # Show up to 8 files
+                        change_indicator = {"added": "+", "deleted": "-", "modified": "~"}.get(fc.change_type, "~")
+                        stats = f"[green]+{fc.insertions}[/][{BRAND_MUTED}]/[/][red]-{fc.deletions}[/]" if (fc.insertions or fc.deletions) else ""
+                        console.print(f"  [{BRAND_MUTED}]{change_indicator}[/] {fc.file_path} {stats}")
+                    if len(story.file_changes) > 8:
+                        console.print(f"  [{BRAND_MUTED}]... and {len(story.file_changes) - 8} more files[/]")
+
+                # Key code snippets
+                if story.key_snippets:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Snippets:[/]")
+                    for snippet in story.key_snippets[:2]:  # Show up to 2 snippets
+                        lang = snippet.language or ""
+                        console.print(f"  [{BRAND_MUTED}]{snippet.file_path}[/]")
+                        console.print(f"```{lang}\n{snippet.content}\n```")
+
+            console.print()
+            console.print(f"[{BRAND_MUTED}]{'─' * 60}[/]")
+            console.print()
+
+        print_header()
+
+        if group and all_repos:
+            # Grouped view: organize by project
+            console.print(f"[bold]@all repos[/] · build log [dim](grouped)[/]")
+            console.print()
+
+            # Group stories by project
+            from collections import defaultdict
+            stories_by_project = defaultdict(list)
+            for story in stories:
+                stories_by_project[story.project_id].append(story)
+
+            # Render each project group
+            for project_id, project_stories in stories_by_project.items():
+                project_name = projects.get(project_id, "unknown")
+                console.print(f"[bold]── {project_name} ──[/]")
+                console.print()
+
+                for story in project_stories:
+                    render_story(story, show_repo=False)
+
+        else:
+            # Timeline view (default)
+            console.print(f"[bold]@{header_name}[/] · build log")
+            console.print()
+
+            for story in stories:
+                render_story(story, show_repo=all_repos)
+
+        return
+
+    # Default format (unchanged)
     print_header()
     console.print(f"Timeline: [bold]{project_path.name}[/] (last {days} days)")
     console.print()
-    
+
     for entry in reversed(entries):  # Show newest first
         # Format timestamp (convert to local timezone)
         local_ts = entry.timestamp.astimezone()
         ts = local_ts.strftime("%Y-%m-%d %H:%M")
-        
+
         # Entry type indicator
         if entry.type == TimelineEntryType.COMMIT:
             type_icon = "📝"
@@ -3224,7 +4029,7 @@ def timeline_show(
             type_icon = "💬"
         else:  # MERGED
             type_icon = "🔗"
-        
+
         # Build description
         if entry.commit:
             # Show first line of commit message
@@ -3240,12 +4045,153 @@ def timeline_show(
             if len(entry.session_context.problem) > 60:
                 problem += "..."
             console.print(f"{type_icon} [{BRAND_MUTED}]{ts}[/] {problem}")
-        
+
         # Show session context if merged
         if entry.type == TimelineEntryType.MERGED and entry.session_context:
             console.print(f"    [{BRAND_MUTED}]→ {entry.session_context.problem[:70]}[/]")
-        
+
         console.print()
+
+
+@timeline_app.command("refresh")
+def timeline_refresh(
+    path: Optional[str] = typer.Argument(
+        None,
+        help="Project path (use '.' for current repo, omit for all repos)",
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-n",
+        help="Maximum stories to refresh",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON",
+    ),
+):
+    """
+    Regenerate posts for existing stories.
+
+    This updates the public_post and internal_post fields without
+    re-analyzing commits. Useful after prompt improvements.
+
+    Examples:
+        repr timeline refresh              # Refresh all repos
+        repr timeline refresh .            # Refresh current repo only
+        repr timeline refresh --limit 10   # Refresh last 10 stories
+    """
+    from .db import get_db
+    from .story_synthesis import (
+        transform_story_for_feed_sync,
+        _build_fallback_post,
+        extract_file_changes_from_commits,
+        extract_key_snippets_from_commits,
+    )
+
+    db = get_db()
+
+    # Determine scope
+    if path is None:
+        # All repos
+        stories = db.list_stories(limit=limit)
+        scope_name = "all repos"
+    else:
+        # Specific repo
+        from .timeline import detect_project_root
+        resolved_path = Path(path) if path else Path.cwd()
+        if not resolved_path.is_absolute():
+            resolved_path = Path.cwd() / resolved_path
+        resolved_path = resolved_path.resolve()
+
+        repo_root = detect_project_root(resolved_path)
+        if not repo_root:
+            print_error(f"Not a git repository: {resolved_path}")
+            raise typer.Exit(1)
+
+        project = db.get_project_by_path(repo_root)
+        if not project:
+            print_error(f"No stories found for {repo_root.name}")
+            raise typer.Exit(1)
+
+        stories = db.list_stories(project_id=project["id"], limit=limit)
+        scope_name = repo_root.name
+
+    if not stories:
+        print_info("No stories to refresh")
+        return
+
+    print_header()
+    console.print(f"Refreshing {len(stories)} stories from {scope_name}...")
+    console.print()
+
+    refreshed = 0
+    failed = 0
+
+    # Get project paths for file extraction
+    project_paths = {}
+    for p in db.list_projects():
+        project_paths[p["id"]] = p["path"]
+
+    for story in stories:
+        try:
+            # Extract file changes and snippets from git
+            project_path = project_paths.get(story.project_id)
+            if story.commit_shas and project_path:
+                file_changes, total_ins, total_del = extract_file_changes_from_commits(
+                    story.commit_shas, project_path
+                )
+                story.file_changes = file_changes
+                story.total_insertions = total_ins
+                story.total_deletions = total_del
+                story.key_snippets = extract_key_snippets_from_commits(
+                    story.commit_shas, project_path, max_snippets=3
+                )
+
+            # Regenerate Tripartite Codex content
+            result = transform_story_for_feed_sync(story, mode="internal")
+
+            # Store structured fields
+            story.hook = result.hook
+            story.what = result.what
+            story.value = result.value
+            story.insight = result.insight
+            story.show = result.show
+
+            # Internal-specific fields
+            if hasattr(result, 'problem') and result.problem:
+                story.problem = result.problem
+            if hasattr(result, 'how') and result.how:
+                story.implementation_details = result.how
+
+            # Legacy fields for backward compatibility
+            story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+            story.internal_post = story.public_post
+            story.public_show = result.show
+            story.internal_show = result.show
+
+            # Update in database
+            db.save_story(story, story.project_id)
+            refreshed += 1
+
+            if not json_output:
+                console.print(f"  [green]✓[/] {story.title[:60]}")
+
+        except Exception as e:
+            # Use fallback
+            fallback_post = _build_fallback_post(story)
+            story.public_post = fallback_post
+            story.internal_post = fallback_post
+            db.save_story(story, story.project_id)
+            failed += 1
+
+            if not json_output:
+                console.print(f"  [yellow]![/] {story.title[:60]} (fallback)")
+
+    console.print()
+
+    if json_output:
+        print(json.dumps({"refreshed": refreshed, "failed": failed}))
+    else:
+        print_success(f"Refreshed {refreshed} stories" + (f" ({failed} used fallback)" if failed else ""))
 
 
 @timeline_app.command("ingest-session")
@@ -3460,158 +4406,6 @@ def timeline_ingest_session(
         console.print(f"  Entry type: {entry_type.value if entry_type else 'merged'}")
 
 
-@timeline_app.command("synthesize")
-def timeline_synthesize(
-    path: Optional[Path] = typer.Argument(
-        None,
-        help="Project path (default: current directory)",
-        exists=True,
-        dir_okay=True,
-        resolve_path=True,
-    ),
-    weeks: int = typer.Option(
-        4, "--weeks", "-w",
-        help="Number of weeks to look back",
-    ),
-    model: Optional[str] = typer.Option(
-        None, "--model", "-m",
-        help="Model to use for synthesis (default: from config)",
-    ),
-    batch_size: int = typer.Option(
-        25, "--batch-size", "-b",
-        help="Commits per LLM batch",
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run",
-        help="Don't save results",
-    ),
-    json_output: bool = typer.Option(
-        False, "--json",
-        help="Output as JSON",
-    ),
-):
-    """
-    Synthesize stories from commits.
-    
-    Uses LLM to group related commits into coherent stories
-    and extract rich context (problem, approach, implementation details).
-    
-    Examples:
-        repr timeline synthesize              # Default 4 weeks
-        repr timeline synthesize --weeks 8   # Last 8 weeks
-        repr timeline synthesize --model kimi-k2.5:cloud
-    """
-    import asyncio
-    from .timeline import detect_project_root, extract_commits_from_git
-    from .story_synthesis import synthesize_stories
-    from .storage import load_repr_store, save_repr_store, create_repr_store
-    
-    # Determine project path
-    project_path = path or Path.cwd()
-    repo_root = detect_project_root(project_path)
-    
-    if not repo_root:
-        print_error(f"Not a git repository: {project_path}")
-        raise typer.Exit(1)
-    
-    project_path = repo_root
-    
-    if not json_output:
-        print_header()
-        console.print(f"Synthesizing stories for [bold]{project_path.name}[/]")
-        console.print()
-    
-    # Extract commits
-    days = weeks * 7
-    commits = extract_commits_from_git(project_path, days=days)
-    
-    if not commits:
-        if json_output:
-            print(json.dumps({"success": False, "error": "No commits found"}))
-        else:
-            print_warning(f"No commits in the last {weeks} weeks")
-        raise typer.Exit(1)
-    
-    if not json_output:
-        console.print(f"  Found {len(commits)} commits in last {weeks} weeks")
-    
-    # Sessions not yet integrated into story synthesis
-    sessions = None
-    
-    # Get model from config if not specified
-    if not model:
-        llm_config = get_llm_config()
-        # Priority: extraction_model > local_model > default
-        model = llm_config.get("extraction_model") or llm_config.get("local_model") or "gpt-4o-mini"
-    
-    if not json_output:
-        console.print(f"  Using model: {model}")
-        console.print()
-    
-    # Run synthesis
-    async def run_synthesis():
-        def progress(current: int, total: int) -> None:
-            if not json_output:
-                console.print(f"  Batch {current}/{total}")
-        
-        return await synthesize_stories(
-            commits=commits,
-            sessions=sessions if sessions else None,
-            model=model,
-            batch_size=batch_size,
-            progress_callback=progress,
-        )
-    
-    try:
-        stories, index = asyncio.run(run_synthesis())
-    except ValueError as e:
-        if json_output:
-            print(json.dumps({"success": False, "error": str(e)}))
-        else:
-            print_error(f"Synthesis failed: {e}")
-            print_info("Configure API key: repr llm byok openai <key>")
-        raise typer.Exit(1)
-    
-    if json_output:
-        print(json.dumps({
-            "success": True,
-            "stories_count": len(stories),
-            "stories": [s.model_dump(mode="json") for s in stories],
-            "index_stats": {
-                "files": len(index.files_to_stories),
-                "keywords": len(index.keywords_to_stories),
-                "weeks": len(index.by_week),
-            },
-        }, indent=2, default=str))
-        return
-    
-    console.print()
-    console.print(f"[{BRAND_SUCCESS}]✓[/] Synthesized {len(stories)} stories")
-    console.print()
-    
-    # Display stories
-    for i, story in enumerate(stories[:10], 1):
-        console.print(f"{i}. [{BRAND_MUTED}][{story.category}][/] {story.title[:60]}")
-        console.print(f"   Commits: {len(story.commit_shas)} | Sessions: {len(story.session_ids)}")
-        if story.problem:
-            console.print(f"   Problem: {story.problem[:70]}...")
-        if story.implementation_details:
-            console.print(f"   Details: {len(story.implementation_details)} items")
-        console.print()
-    
-    if len(stories) > 10:
-        console.print(f"[{BRAND_MUTED}]...and {len(stories) - 10} more[/]")
-        console.print()
-    
-    # Save
-    if not dry_run:
-        store = create_repr_store(stories, index)
-        store_path = save_repr_store(project_path, store)
-        print_success(f"Saved to {store_path.relative_to(project_path)}")
-    else:
-        print_info("Dry run - not saved")
-
-
 @timeline_app.command("serve")
 def timeline_serve(
     port: int = typer.Option(
@@ -3623,56 +4417,49 @@ def timeline_serve(
         help="Host to bind to",
     ),
     open_browser: bool = typer.Option(
-        False, "--open",
-        help="Auto-open browser",
-    ),
-    path: Optional[Path] = typer.Argument(
-        None,
-        help="Project path (default: current directory)",
-        exists=True,
-        dir_okay=True,
-        resolve_path=True,
+        True, "--open/--no-open",
+        help="Auto-open browser (default: enabled)",
     ),
 ):
     """
     Launch web dashboard for timeline exploration.
-    
+
     Starts a local web server to browse and search through your
     timeline entries with rich context visualization.
-    
+
+    Works from any directory - reads from central SQLite database.
+
     Examples:
-        repr timeline serve              # localhost:3000
+        repr timeline serve              # localhost:3000, auto-opens browser
         repr timeline serve --port 8080  # custom port
-        repr timeline serve --open       # auto-open browser
+        repr timeline serve --no-open    # don't auto-open browser
     """
     import webbrowser
-    from .timeline import detect_project_root
     from .dashboard import run_server
-    
-    # Determine project path
-    project_path = path or Path.cwd()
-    repo_root = detect_project_root(project_path)
-    
-    if not repo_root:
-        print_error(f"Not a git repository: {project_path}")
+    from .db import DB_PATH, get_db
+
+    # Check if SQLite database exists and has stories
+    if not DB_PATH.exists():
+        print_error("No stories database found")
+        print_info("Run `repr generate` in a git repository first")
         raise typer.Exit(1)
-    
-    project_path = repo_root
-    
-    # Check if story store exists
-    store_path = project_path / ".repr" / "store.json"
-    if not store_path.exists():
-        print_error("Stories not found (store.json)")
-        print_info("Run: repr timeline synthesize")
+
+    db = get_db()
+    stats = db.get_stats()
+    story_count = stats.get("story_count", 0)
+    project_count = stats.get("project_count", 0)
+
+    if story_count == 0:
+        print_error("No stories in database")
+        print_info("Run `repr generate` to create stories from commits")
         raise typer.Exit(1)
-    
+
+    console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
+
     url = f"http://{host}:{port}"
     
     print_header()
-    console.print(f"Starting dashboard for [bold]{project_path.name}[/]")
-    console.print()
     console.print(f"  URL: [bold blue]{url}[/]")
-    console.print(f"  Source: .repr/store.json")
     console.print()
     console.print("[dim]Press Ctrl+C to stop[/]")
     console.print()
@@ -3681,7 +4468,7 @@ def timeline_serve(
         webbrowser.open(url)
     
     try:
-        run_server(port, host, store_path)
+        run_server(port, host)
     except KeyboardInterrupt:
         console.print()
         print_info("Server stopped")

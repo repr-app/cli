@@ -1014,6 +1014,28 @@ async def get_context(
 # STORY-CENTRIC TOOLS (Phase 7)
 # =============================================================================
 
+def _story_to_dict(story, project_name: str = "") -> dict:
+    """Convert a Story object to a dictionary for MCP response."""
+    return {
+        "project": project_name,
+        "story": {
+            "id": story.id,
+            "title": story.title,
+            "problem": story.problem,
+            "approach": story.approach,
+            "implementation_details": story.implementation_details,
+            "decisions": story.decisions,
+            "outcome": story.outcome,
+            "lessons": story.lessons,
+            "category": story.category,
+            "files": story.files[:10] if story.files else [],
+            "commit_count": len(story.commit_shas) if story.commit_shas else 0,
+            "session_count": len(story.session_ids) if story.session_ids else 0,
+            "started_at": story.started_at.isoformat() if story.started_at else None,
+        }
+    }
+
+
 @mcp.tool()
 async def search_stories(
     query: str,
@@ -1024,109 +1046,35 @@ async def search_stories(
 ) -> list[dict]:
     """
     Search developer stories using the content index.
-    
+
     Efficiently finds relevant stories by keyword, file, or time range.
     Returns Story objects with full WHY/WHAT context.
-    
+
     Args:
         query: Keywords to search (matches title, problem, keywords)
         files: Optional file paths to filter by
         since: Optional time filter (e.g., "7 days ago", "2026-01-01")
         category: Optional category filter (feature, bugfix, refactor, etc.)
         limit: Maximum stories to return
-    
+
     Returns:
         List of matching stories with context
     """
-    from pathlib import Path
-    from .timeline import detect_project_root, is_initialized
-    from .storage import load_repr_store
-    from .config import get_tracked_repos
-    
+    from .db import get_db
+
+    db = get_db()
+    stories = db.search_stories(query, files=files, limit=limit)
+
+    # Apply category filter
+    if category:
+        stories = [s for s in stories if s.category == category]
+
     results = []
-    query_words = set(query.lower().split())
-    
-    # Find all initialized projects
-    projects = []
-    cwd_root = detect_project_root(Path.cwd())
-    if cwd_root and is_initialized(cwd_root):
-        projects.append(cwd_root)
-    
-    for repo in get_tracked_repos():
-        repo_path = Path(repo["path"])
-        if repo_path.exists() and is_initialized(repo_path):
-            if repo_path not in projects:
-                projects.append(repo_path)
-    
-    for proj_path in projects:
-        try:
-            store = load_repr_store(proj_path)
-            if not store:
-                continue
-            
-            # Use index for efficient lookup
-            index = store.index
-            matching_story_ids = set()
-            
-            # Search by file
-            if files:
-                for f in files:
-                    if f in index.files_to_stories:
-                        matching_story_ids.update(index.files_to_stories[f])
-            
-            # Search by keyword
-            for word in query_words:
-                if word in index.keywords_to_stories:
-                    if files:
-                        # AND with file matches
-                        matching_story_ids &= set(index.keywords_to_stories[word])
-                    else:
-                        matching_story_ids.update(index.keywords_to_stories[word])
-            
-            # Get full stories
-            story_map = {s.id: s for s in store.stories}
-            
-            for story_id in matching_story_ids:
-                if story_id not in story_map:
-                    continue
-                story = story_map[story_id]
-                
-                # Apply category filter
-                if category and story.category != category:
-                    continue
-                
-                # Score by relevance
-                score = 0.0
-                if any(word in story.title.lower() for word in query_words):
-                    score += 0.5
-                if any(word in story.problem.lower() for word in query_words):
-                    score += 0.4
-                if files and any(f in story.files for f in files):
-                    score += 0.3
-                
-                results.append({
-                    "score": round(score, 2),
-                    "project": proj_path.name,
-                    "story": {
-                        "id": story.id,
-                        "title": story.title,
-                        "problem": story.problem,
-                        "approach": story.approach,
-                        "implementation_details": story.implementation_details,
-                        "decisions": story.decisions,
-                        "outcome": story.outcome,
-                        "lessons": story.lessons,
-                        "category": story.category,
-                        "files": story.files[:10],
-                        "commit_count": len(story.commit_shas),
-                        "session_count": len(story.session_ids),
-                        "started_at": story.started_at.isoformat() if story.started_at else None,
-                    }
-                })
-        except Exception:
-            continue
-    
-    results.sort(key=lambda r: r["score"], reverse=True)
+    for story in stories:
+        result = _story_to_dict(story)
+        result["score"] = 1.0  # FTS already ranks by relevance
+        results.append(result)
+
     return results[:limit]
 
 
@@ -1134,58 +1082,30 @@ async def search_stories(
 async def get_story(story_id: str) -> dict:
     """
     Get full details of a specific story by ID.
-    
+
     Args:
         story_id: Story UUID
-    
+
     Returns:
         Complete story with all context and linked commits/sessions
     """
-    from pathlib import Path
-    from .timeline import detect_project_root, is_initialized
-    from .storage import load_repr_store
-    from .config import get_tracked_repos
-    
-    # Search all projects for the story
-    projects = []
-    cwd_root = detect_project_root(Path.cwd())
-    if cwd_root and is_initialized(cwd_root):
-        projects.append(cwd_root)
-    
-    for repo in get_tracked_repos():
-        repo_path = Path(repo["path"])
-        if repo_path.exists() and is_initialized(repo_path):
-            projects.append(repo_path)
-    
-    for proj_path in projects:
-        try:
-            store = load_repr_store(proj_path)
-            if not store:
-                continue
-            
-            for story in store.stories:
-                if story.id == story_id:
-                    # Get linked commits
-                    commits = [c for c in store.commits if c.sha in story.commit_shas]
-                    # Get linked sessions
-                    sessions = [s for s in store.sessions if s.session_id in story.session_ids]
-                    
-                    return {
-                        "found": True,
-                        "project": proj_path.name,
-                        "story": story.model_dump(),
-                        "commits": [
-                            {"sha": c.sha[:8], "message": c.message, "files": c.files}
-                            for c in commits
-                        ],
-                        "sessions": [
-                            {"id": s.session_id, "problem": s.problem, "approach": s.approach}
-                            for s in sessions
-                        ],
-                    }
-        except Exception:
-            continue
-    
+    from .db import get_db
+
+    db = get_db()
+    story = db.get_story(story_id)
+
+    if story:
+        return {
+            "found": True,
+            "story": story.model_dump(),
+            "commits": [
+                {"sha": sha[:8]} for sha in (story.commit_shas or [])
+            ],
+            "sessions": [
+                {"id": sid} for sid in (story.session_ids or [])
+            ],
+        }
+
     return {"found": False, "story_id": story_id}
 
 
@@ -1197,69 +1117,38 @@ async def list_recent_stories(
 ) -> list[dict]:
     """
     List recent stories from the timeline.
-    
+
     Args:
         days: Number of days to look back
         category: Optional category filter
         limit: Maximum stories to return
-    
+
     Returns:
         List of recent stories with summaries
     """
-    from pathlib import Path
     from datetime import datetime, timedelta, timezone
-    from .timeline import detect_project_root, is_initialized
-    from .storage import load_repr_store
-    from .config import get_tracked_repos
-    
-    results = []
+    from .db import get_db
+
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    
-    # Find all projects
-    projects = []
-    cwd_root = detect_project_root(Path.cwd())
-    if cwd_root and is_initialized(cwd_root):
-        projects.append(cwd_root)
-    
-    for repo in get_tracked_repos():
-        repo_path = Path(repo["path"])
-        if repo_path.exists() and is_initialized(repo_path):
-            if repo_path not in projects:
-                projects.append(repo_path)
-    
-    for proj_path in projects:
-        try:
-            store = load_repr_store(proj_path)
-            if not store:
-                continue
-            
-            for story in store.stories:
-                # Filter by time
-                story_time = story.started_at or story.created_at
-                if story_time < since:
-                    continue
-                
-                # Filter by category
-                if category and story.category != category:
-                    continue
-                
-                results.append({
-                    "project": proj_path.name,
-                    "id": story.id,
-                    "title": story.title,
-                    "problem": story.problem[:200] if story.problem else "",
-                    "category": story.category,
-                    "commit_count": len(story.commit_shas),
-                    "session_count": len(story.session_ids),
-                    "implementation_detail_count": len(story.implementation_details),
-                    "timestamp": story_time.isoformat(),
-                })
-        except Exception:
-            continue
-    
-    # Sort by time descending
-    results.sort(key=lambda r: r["timestamp"], reverse=True)
-    return results[:limit]
+
+    db = get_db()
+    stories = db.list_stories(category=category, since=since, limit=limit)
+
+    results = []
+    for story in stories:
+        story_time = story.started_at or story.created_at
+        results.append({
+            "id": story.id,
+            "title": story.title,
+            "problem": story.problem[:200] if story.problem else "",
+            "category": story.category,
+            "commit_count": len(story.commit_shas) if story.commit_shas else 0,
+            "session_count": len(story.session_ids) if story.session_ids else 0,
+            "implementation_detail_count": len(story.implementation_details) if story.implementation_details else 0,
+            "timestamp": story_time.isoformat() if story_time else None,
+        })
+
+    return results
 
 
 # =============================================================================

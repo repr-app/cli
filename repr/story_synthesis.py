@@ -17,8 +17,10 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from .models import (
+    CodeSnippet,
     CommitData,
     ContentIndex,
+    FileChange,
     SessionContext,
     Story,
     StoryDigest,
@@ -54,14 +56,102 @@ class BatchAnalysis(BaseModel):
 # Prompts
 # =============================================================================
 
+PUBLIC_STORY_SYSTEM = """You're creating structured content for a developer's "build in public" feed.
+
+Given a technical story, extract and compose its key elements into the Tripartite Codex format:
+
+1. HOOK (<60 chars): An engagement hook - story opener that draws readers in.
+   Vary the style: transformation ("This used to crash. Now it doesn't."),
+   confession ("Should have done this months ago."), observation ("Turns out null checks aren't optional."),
+   quiet victory ("It finally works the way I imagined."), or curiosity ("The bug that only happened on Tuesdays.").
+   Be authentic, not clickbait. NEVER be repetitive or cheesy.
+
+2. WHAT (1 sentence): The behavioral primitive - what observable change happened.
+   This is the keystone both engineers and users can understand.
+
+3. VALUE (1 sentence): External why - why users/stakeholders should care.
+   The narrative impetus, the emotional/practical value.
+
+4. INSIGHT (1 sentence): The transferable engineering lesson or principle demonstrated.
+   Something another developer could apply elsewhere.
+
+5. SHOW (optional): A visual that illustrates the change - code block, before/after, diagram.
+   Only include if it genuinely adds clarity.
+
+Output JSON with these exact fields:
+- "hook": string (<60 chars)
+- "what": string (1 sentence)
+- "value": string (1 sentence)
+- "insight": string (1 sentence)
+- "show": string or null
+"""
+
+PUBLIC_STORY_USER = """Extract structured content from this technical story:
+
+Title: {title}
+Category: {category}
+Problem: {problem}
+Approach: {approach}
+Outcome: {outcome}
+Implementation Details: {implementation_details}
+
+Output valid JSON with "hook", "what", "value", "insight", and "show" fields."""
+
+
+INTERNAL_STORY_SYSTEM = """You're creating structured content for a developer's internal feed with full technical context.
+
+Given a technical story, extract all elements into the Tripartite Codex format:
+
+1. HOOK (<60 chars): An engagement hook - story opener that draws readers in.
+   Vary the style: transformation, confession, observation, quiet victory, or curiosity.
+   Be authentic, not clickbait. NEVER be repetitive.
+
+2. WHAT (1 sentence): The behavioral primitive - what observable change happened.
+
+3. VALUE (1 sentence): External why - why users/stakeholders should care.
+
+4. PROBLEM (1 sentence): Internal why - what was broken/missing that motivated this.
+
+5. HOW (list): Implementation details - specific technical changes made.
+
+6. INSIGHT (1 sentence): The transferable engineering lesson.
+
+7. SHOW (optional): A visual that illustrates the change.
+
+Output JSON with these exact fields:
+- "hook": string (<60 chars)
+- "what": string (1 sentence)
+- "value": string (1 sentence)
+- "problem": string (1 sentence)
+- "how": array of strings (implementation details)
+- "insight": string (1 sentence)
+- "show": string or null
+"""
+
+INTERNAL_STORY_USER = """Extract full structured content from this technical story:
+
+Title: {title}
+Category: {category}
+Problem: {problem}
+Approach: {approach}
+Outcome: {outcome}
+Implementation Details: {implementation_details}
+Decisions: {decisions}
+Files: {files}
+
+Output valid JSON with "hook", "what", "value", "problem", "how", "insight", and "show" fields."""
+
+
 STORY_SYNTHESIS_SYSTEM = """You analyze git commits and group them into coherent "stories" - logical units of work.
 
 Your job:
 1. Read the batch of commits
-2. Identify which commits belong together (same feature, bug fix, refactor, etc.)
+2. Group related commits into meaningful stories (features, fixes, refactors)
 3. For each group, extract the WHY/WHAT/HOW context
 
-A single commit CAN be its own story. Multiple related commits should be grouped together.
+IMPORTANT: Prefer grouping commits over creating many small stories. A story should represent a complete unit of value or logical change. 
+- If multiple commits relate to the same feature, GROUP THEM.
+- If a commit is a small fix for a previous commit in the batch, GROUP THEM.
 
 Output JSON with a "stories" array. EVERY field must be filled in - do not leave any empty:
 
@@ -110,51 +200,277 @@ Example format:
 
 
 # =============================================================================
+# File Change Extraction
+# =============================================================================
+
+def extract_file_changes_from_commits(
+    commit_shas: list[str],
+    project_path: str | None = None,
+) -> tuple[list[FileChange], int, int]:
+    """
+    Extract detailed file changes from git commits.
+
+    Args:
+        commit_shas: List of commit SHAs to analyze
+        project_path: Path to git repo (optional, uses cwd)
+
+    Returns:
+        Tuple of (file_changes, total_insertions, total_deletions)
+    """
+    try:
+        from git import Repo
+        from pathlib import Path
+
+        repo_path = Path(project_path) if project_path else Path.cwd()
+        repo = Repo(repo_path, search_parent_directories=True)
+    except Exception:
+        return [], 0, 0
+
+    # Aggregate file stats across all commits
+    file_stats: dict[str, dict] = {}  # path -> {insertions, deletions, change_type}
+    total_ins = 0
+    total_del = 0
+
+    for sha in commit_shas:
+        try:
+            commit = repo.commit(sha)
+
+            # Get per-file stats
+            for file_path, stats in commit.stats.files.items():
+                ins = stats.get("insertions", 0)
+                dels = stats.get("deletions", 0)
+
+                if file_path not in file_stats:
+                    file_stats[file_path] = {
+                        "insertions": 0,
+                        "deletions": 0,
+                        "change_type": "modified",
+                    }
+
+                file_stats[file_path]["insertions"] += ins
+                file_stats[file_path]["deletions"] += dels
+                total_ins += ins
+                total_del += dels
+
+                # Determine change type
+                if ins > 0 and dels == 0 and file_stats[file_path]["deletions"] == 0:
+                    file_stats[file_path]["change_type"] = "added"
+                elif dels > 0 and ins == 0 and file_stats[file_path]["insertions"] == 0:
+                    file_stats[file_path]["change_type"] = "deleted"
+
+        except Exception:
+            continue
+
+    # Convert to FileChange objects
+    file_changes = [
+        FileChange(
+            file_path=path,
+            change_type=stats["change_type"],
+            insertions=stats["insertions"],
+            deletions=stats["deletions"],
+        )
+        for path, stats in sorted(file_stats.items())
+    ]
+
+    return file_changes, total_ins, total_del
+
+
+def extract_key_snippets_from_commits(
+    commit_shas: list[str],
+    project_path: str | None = None,
+    max_snippets: int = 3,
+    max_lines: int = 15,
+) -> list[CodeSnippet]:
+    """
+    Extract representative code snippets from commit diffs.
+
+    Args:
+        commit_shas: List of commit SHAs
+        project_path: Path to git repo
+        max_snippets: Maximum number of snippets to return
+        max_lines: Maximum lines per snippet
+
+    Returns:
+        List of CodeSnippet objects
+    """
+    try:
+        from git import Repo
+        from pathlib import Path
+
+        repo_path = Path(project_path) if project_path else Path.cwd()
+        repo = Repo(repo_path, search_parent_directories=True)
+    except Exception:
+        return []
+
+    snippets = []
+    seen_files = set()
+
+    # Language detection by extension
+    ext_to_lang = {
+        ".py": "python", ".js": "javascript", ".ts": "typescript",
+        ".tsx": "tsx", ".jsx": "jsx", ".go": "go", ".rs": "rust",
+        ".java": "java", ".rb": "ruby", ".php": "php", ".c": "c",
+        ".cpp": "cpp", ".h": "c", ".hpp": "cpp", ".cs": "csharp",
+        ".swift": "swift", ".kt": "kotlin", ".sql": "sql",
+        ".sh": "bash", ".yaml": "yaml", ".yml": "yaml", ".json": "json",
+        ".md": "markdown", ".html": "html", ".css": "css", ".scss": "scss",
+    }
+
+    for sha in commit_shas:
+        if len(snippets) >= max_snippets:
+            break
+
+        try:
+            commit = repo.commit(sha)
+
+            # Get diff with parent
+            if not commit.parents:
+                continue
+            parent = commit.parents[0]
+
+            for diff in parent.diff(commit, create_patch=True):
+                if len(snippets) >= max_snippets:
+                    break
+
+                file_path = diff.b_path or diff.a_path
+                if not file_path or file_path in seen_files:
+                    continue
+
+                # Skip binary and non-code files
+                ext = Path(file_path).suffix.lower()
+                if ext not in ext_to_lang:
+                    continue
+
+                seen_files.add(file_path)
+
+                # Extract added lines from diff
+                try:
+                    diff_text = diff.diff.decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+
+                # Find added lines (lines starting with +, not ++)
+                added_lines = []
+                for line in diff_text.split("\n"):
+                    if line.startswith("+") and not line.startswith("+++"):
+                        added_lines.append(line[1:])  # Remove the + prefix
+
+                if not added_lines:
+                    continue
+
+                # Take first max_lines of meaningful additions
+                content_lines = []
+                for line in added_lines:
+                    stripped = line.strip()
+                    # Skip empty lines, imports, and simple syntax
+                    if stripped and not stripped.startswith(("import ", "from ", "#", "//", "/*", "*")):
+                        content_lines.append(line)
+                    if len(content_lines) >= max_lines:
+                        break
+
+                if len(content_lines) < 2:  # Need at least 2 meaningful lines
+                    continue
+
+                snippets.append(CodeSnippet(
+                    file_path=file_path,
+                    language=ext_to_lang.get(ext, ""),
+                    content="\n".join(content_lines),
+                    line_count=len(content_lines),
+                    context=f"Changes in {Path(file_path).name}",
+                ))
+
+        except Exception:
+            continue
+
+    return snippets
+
+
+# =============================================================================
 # Synthesis Engine
 # =============================================================================
 
 class StorySynthesizer:
     """Synthesizes stories from commits using LLM."""
-    
+
     def __init__(
         self,
         api_key: str | None = None,
         base_url: str | None = None,
-        model: str = "gpt-4o-mini",
+        model: str | None = None,
     ):
         self.api_key = api_key
         self.base_url = base_url
-        self.model = model
+        self._model_override = model  # Explicit override
+        self._model: str | None = None  # Resolved model (lazy)
         self._client: AsyncOpenAI | None = None
-    
+
+    @property
+    def model(self) -> str:
+        """Get the model to use, reading from config if not set."""
+        if self._model is None:
+            self._model = self._resolve_model()
+        return self._model
+
+    @model.setter
+    def model(self, value: str):
+        """Allow setting model directly."""
+        self._model = value
+
+    def _resolve_model(self) -> str:
+        """Resolve model from override, config, or default."""
+        if self._model_override:
+            return self._model_override
+
+        try:
+            from .config import get_llm_config
+            llm_config = get_llm_config()
+            default_mode = llm_config.get("default", "local")
+
+            # Priority: synthesis_model > mode-specific model > default
+            if llm_config.get("synthesis_model"):
+                return llm_config["synthesis_model"]
+
+            # Use model based on configured default mode
+            if default_mode == "local" and llm_config.get("local_model"):
+                return llm_config["local_model"]
+            elif default_mode == "cloud" and llm_config.get("cloud_model"):
+                return llm_config["cloud_model"]
+
+            # Fallback to any configured model
+            if llm_config.get("local_model"):
+                return llm_config["local_model"]
+            if llm_config.get("cloud_model"):
+                return llm_config["cloud_model"]
+        except Exception:
+            pass
+
+        return "gpt-4o-mini"  # Final fallback
+
     def _get_client(self) -> AsyncOpenAI:
         """Get or create OpenAI client."""
         if self._client is None:
             import os
-            
+
             api_key = self.api_key
             base_url = self.base_url
-            
+
             if not api_key:
                 try:
                     from .config import get_byok_config, get_llm_config, get_litellm_config
-                    
+
                     # Check BYOK first
                     byok = get_byok_config("openai")
                     if byok and byok.get("api_key"):
                         api_key = byok["api_key"]
                         base_url = base_url or byok.get("base_url")
-                    
+
                     # Check local LLM config
                     if not api_key:
                         llm_config = get_llm_config()
                         if llm_config.get("local_api_key"):
                             api_key = llm_config["local_api_key"]
                             base_url = base_url or llm_config.get("local_api_url")
-                            # Use configured model if we haven't set one
-                            if self.model == "gpt-4o-mini" and llm_config.get("local_model"):
-                                self.model = llm_config["local_model"]
-                    
+
                     # Check LiteLLM
                     if not api_key:
                         litellm_url, litellm_key = get_litellm_config()
@@ -163,15 +479,15 @@ class StorySynthesizer:
                             base_url = base_url or litellm_url
                 except Exception:
                     pass
-                
+
                 if not api_key:
                     api_key = os.getenv("OPENAI_API_KEY")
-            
+
             if not api_key:
                 raise ValueError("No API key found. Configure via 'repr llm byok openai <key>'")
-            
+
             self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        
+
         return self._client
     
     def _format_commits_for_prompt(self, commits: list[CommitData]) -> str:
@@ -305,8 +621,21 @@ class StorySynthesizer:
                     if any(sha in session.linked_commits for sha in boundary.commit_shas):
                         linked_sessions.append(session.session_id)
             
+            # Detect technologies from files
+            files_list = sorted(all_files)[:50]  # Cap at 50 files
+            technologies = self._detect_tech_stack(files_list)
+
+            # Extract detailed file changes and snippets for recall
+            file_changes, total_ins, total_del = extract_file_changes_from_commits(matched_shas)
+            key_snippets = extract_key_snippets_from_commits(matched_shas, max_snippets=3)
+
+            # Deterministic ID based on sorted commit SHAs
+            # This prevents duplicates if the same stories are generated again
+            sorted_shas = sorted(matched_shas)
+            story_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"repr-story-{'-'.join(sorted_shas)}"))
+
             story = Story(
-                id=str(uuid.uuid4()),
+                id=story_id,
                 created_at=now,
                 updated_at=now,
                 commit_shas=matched_shas,  # Use full matched SHAs
@@ -320,9 +649,15 @@ class StorySynthesizer:
                 outcome=boundary.outcome,
                 lessons=boundary.lessons,
                 category=boundary.category,
-                files=sorted(all_files)[:50],  # Cap at 50 files
+                technologies=technologies,
+                files=files_list,
                 started_at=started_at,
                 ended_at=ended_at,
+                # Recall data
+                file_changes=file_changes,
+                key_snippets=key_snippets,
+                total_insertions=total_ins,
+                total_deletions=total_del,
             )
             stories.append(story)
         
@@ -506,3 +841,268 @@ def synthesize_stories_sync(
 ) -> tuple[list[Story], ContentIndex]:
     """Synchronous wrapper for synthesize_stories."""
     return asyncio.run(synthesize_stories(commits, sessions, **kwargs))
+
+
+# =============================================================================
+# Public/Internal Story Transformation
+# =============================================================================
+
+class PublicStory(BaseModel):
+    """LLM output for public-facing story (Tripartite Codex)."""
+    hook: str = Field(description="Engagement hook, <60 chars")
+    what: str = Field(description="Behavioral primitive - observable change")
+    value: str = Field(description="External why - user/stakeholder value")
+    insight: str = Field(description="Transferable engineering lesson")
+    show: str | None = Field(default=None, description="Optional visual/code block")
+
+
+class InternalStory(BaseModel):
+    """LLM output for internal story with full technical context."""
+    hook: str = Field(description="Engagement hook, <60 chars")
+    what: str = Field(description="Behavioral primitive - observable change")
+    value: str = Field(description="External why - user/stakeholder value")
+    problem: str = Field(default="", description="Internal why - what was broken/missing")
+    how: list[str] = Field(default_factory=list, description="Implementation details")
+    insight: str = Field(description="Transferable engineering lesson")
+    show: str | None = Field(default=None, description="Optional visual/code block")
+
+
+async def transform_story_for_feed(
+    story: Story,
+    mode: str = "public",
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> PublicStory | InternalStory:
+    """
+    Transform a technical story into a build-in-public feed post.
+
+    Args:
+        story: The Story to transform
+        mode: "public" (impact only) or "internal" (with technical details)
+        api_key: Optional API key
+        base_url: Optional base URL for API
+        model: Optional model name
+
+    Returns:
+        PublicStory or InternalStory depending on mode
+    """
+    synthesizer = StorySynthesizer(api_key=api_key, base_url=base_url, model=model)
+    client = synthesizer._get_client()
+    model_name = synthesizer.model
+
+    # Format implementation details
+    impl_details = "\n".join(f"- {d}" for d in story.implementation_details) if story.implementation_details else "None"
+    decisions = "\n".join(f"- {d}" for d in story.decisions) if story.decisions else "None"
+    files = ", ".join(story.files[:10]) if story.files else "None"
+
+    if mode == "public":
+        system_prompt = PUBLIC_STORY_SYSTEM
+        user_prompt = PUBLIC_STORY_USER.format(
+            title=story.title,
+            category=story.category,
+            problem=story.problem or "Not specified",
+            approach=story.approach or "Not specified",
+            outcome=story.outcome or "Not specified",
+            implementation_details=impl_details,
+        )
+        response_model = PublicStory
+    else:
+        system_prompt = INTERNAL_STORY_SYSTEM
+        user_prompt = INTERNAL_STORY_USER.format(
+            title=story.title,
+            category=story.category,
+            problem=story.problem or "Not specified",
+            approach=story.approach or "Not specified",
+            outcome=story.outcome or "Not specified",
+            implementation_details=impl_details,
+            decisions=decisions,
+            files=files,
+        )
+        response_model = InternalStory
+
+    try:
+        response = await client.chat.completions.create(
+            model=model_name.split("/")[-1] if "/" in model_name else model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            first_newline = content.find("\n")
+            if first_newline > 0:
+                content = content[first_newline + 1:]
+            if content.endswith("```"):
+                content = content[:-3].rstrip()
+
+        result = response_model.model_validate_json(content)
+
+        # Quality check: if hook is empty or too generic, regenerate
+        if not result.hook or len(result.hook) < 10:
+            result = _enhance_with_fallback(result, story, mode)
+
+        return result
+
+    except Exception as e:
+        # Fallback: construct structured content from available data
+        return _build_fallback_codex(story, mode)
+
+
+def _build_fallback_codex(story: Story, mode: str) -> PublicStory | InternalStory:
+    """Build structured Tripartite Codex content when LLM fails."""
+    import random
+
+    # Hook variations by category
+    category_hooks = {
+        "feature": [
+            "Finally built the thing.",
+            "New capability unlocked.",
+            "This changes everything. (Well, something.)",
+            "Shipped it.",
+        ],
+        "bugfix": [
+            "One less thing to worry about.",
+            "The bug is dead. Long live the code.",
+            "Found it. Fixed it. Done.",
+            "That crash? Gone.",
+        ],
+        "refactor": [
+            "Same behavior. Better code.",
+            "Future me will thank present me.",
+            "Cleaned up the mess.",
+            "Technical debt: paid.",
+        ],
+        "perf": [
+            "Faster now.",
+            "Speed boost shipped.",
+            "Shaved off the milliseconds.",
+            "Performance win.",
+        ],
+        "infra": [
+            "Infrastructure that just works.",
+            "Set it up. Forgot about it.",
+            "The plumbing nobody sees.",
+            "Foundation laid.",
+        ],
+        "docs": [
+            "Wrote it down so I won't forget.",
+            "Documentation: the async communication.",
+            "Now it's not just in my head.",
+            "Future onboarding: simplified.",
+        ],
+        "test": [
+            "Now I can refactor with confidence.",
+            "Tests: the safety net.",
+            "Covered.",
+            "One more thing that won't break silently.",
+        ],
+        "chore": [
+            "Housekeeping done.",
+            "Small fix. Big relief.",
+            "Maintenance mode.",
+            "Keeping things tidy.",
+        ],
+    }
+
+    category_insights = {
+        "feature": "New capabilities unlock new possibilities.",
+        "bugfix": "Fewer edge cases mean more reliable software.",
+        "refactor": "Cleaner code is easier to extend.",
+        "perf": "Performance gains compound over time.",
+        "infra": "Good infrastructure is invisible until it's missing.",
+        "docs": "Documentation is a gift to your future self.",
+        "test": "Tests are the safety net that enables bold changes.",
+        "chore": "Small maintenance prevents big problems.",
+    }
+
+    hooks = category_hooks.get(story.category, category_hooks["chore"])
+    hook = random.choice(hooks)
+
+    # Build what from title
+    what = story.title.rstrip(".")
+
+    # Build value from outcome or generate
+    value = story.outcome if story.outcome else f"Improves the {story.category} workflow."
+
+    # Build insight
+    insight = category_insights.get(story.category, "Incremental progress adds up.")
+
+    if mode == "public":
+        return PublicStory(
+            hook=hook,
+            what=what,
+            value=value,
+            insight=insight,
+            show=None,
+        )
+    else:
+        return InternalStory(
+            hook=hook,
+            what=what,
+            value=value,
+            problem=story.problem or "Needed improvement.",
+            how=story.implementation_details or [],
+            insight=insight,
+            show=None,
+        )
+
+
+def _enhance_with_fallback(result: PublicStory | InternalStory, story: Story, mode: str) -> PublicStory | InternalStory:
+    """Enhance a weak LLM result with fallback data."""
+    import random
+
+    category_hooks = {
+        "feature": ["Finally built the thing.", "New capability unlocked.", "Shipped it."],
+        "bugfix": ["One less thing to worry about.", "Found it. Fixed it.", "That crash? Gone."],
+        "refactor": ["Same behavior. Better code.", "Technical debt: paid.", "Cleaned up."],
+        "perf": ["Faster now.", "Speed boost shipped.", "Performance win."],
+        "infra": ["Infrastructure that works.", "Foundation laid.", "Set up and running."],
+        "docs": ["Wrote it down.", "Now it's documented.", "Future-proofed the knowledge."],
+        "test": ["Now I can refactor safely.", "Covered.", "Tests added."],
+        "chore": ["Housekeeping done.", "Small fix. Big relief.", "Tidied up."],
+    }
+
+    hooks = category_hooks.get(story.category, ["Done."])
+    new_hook = random.choice(hooks)
+
+    if mode == "public":
+        return PublicStory(
+            hook=new_hook,
+            what=result.what or story.title,
+            value=result.value or story.outcome or "Improvement shipped.",
+            insight=result.insight or "Progress is progress.",
+            show=result.show,
+        )
+    else:
+        return InternalStory(
+            hook=new_hook,
+            what=result.what or story.title,
+            value=result.value or story.outcome or "Improvement shipped.",
+            problem=result.problem if hasattr(result, 'problem') else story.problem or "",
+            how=result.how if hasattr(result, 'how') else story.implementation_details or [],
+            insight=result.insight or "Progress is progress.",
+            show=result.show,
+        )
+
+
+# Legacy function for backward compatibility
+def _build_fallback_post(story: Story) -> str:
+    """Build a legacy post string from story data."""
+    result = _build_fallback_codex(story, "public")
+    return f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+
+
+def transform_story_for_feed_sync(
+    story: Story,
+    mode: str = "public",
+    **kwargs,
+) -> PublicStory | InternalStory:
+    """Synchronous wrapper for transform_story_for_feed."""
+    return asyncio.run(transform_story_for_feed(story, mode, **kwargs))
