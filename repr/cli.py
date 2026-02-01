@@ -3580,22 +3580,20 @@ Use when: User wants a unified view of commits and AI sessions, or needs to unde
 
 ```bash
 # Stage files
-repr add py               # Stage *.py files
+repr add .py              # Stage *.py files
 repr add .                # Stage all
+repr add src/             # Stage directory
 
-# Create branch (AI generates name from staged)
-repr branch               # AI generates name
-repr branch feat/my-feat  # Explicit name
-
-# Commit (AI generates message)
+# Generate message and commit
 repr commit               # AI generates message
 repr commit -m "fix: x"   # Custom message
+repr commit -r            # Regenerate message
 
-# Push
+# Push to remote
 repr push
 ```
 
-Use when: User wants to stage, branch, commit with AI-generated message, or push.
+Use when: User wants to stage, commit with AI-generated message, or push.
 
 ## Tips
 
