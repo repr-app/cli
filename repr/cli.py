@@ -4719,6 +4719,27 @@ def _clear_cached_commit_info():
         _COMMIT_MSG_CACHE_FILE.unlink()
 
 
+@app.command("clear")
+def clear_cache():
+    """
+    Clear cached branch name and commit message.
+
+    Examples:
+        repr clear
+    """
+    cached = _get_cached_commit_info()
+    if cached:
+        console.print(f"[{BRAND_MUTED}]Clearing cached:[/]")
+        if cached.get("branch"):
+            console.print(f"  Branch: {cached['branch']}")
+        if cached.get("message"):
+            console.print(f"  Message: {cached['message']}")
+        _clear_cached_commit_info()
+        print_success("Cache cleared")
+    else:
+        print_info("No cached branch/message")
+
+
 @app.command("add")
 def add_files(
     pattern: str = typer.Argument(..., help="File pattern to stage (glob pattern)"),
@@ -4801,6 +4822,9 @@ def add_files(
     if not staged:
         print_warning("No files matched pattern or nothing to stage")
         raise typer.Exit(0)
+
+    # Clear cached branch/message so next commit generates fresh
+    _clear_cached_commit_info()
 
     # Show staged files
     console.print(f"[bold]Staged {len(staged)} files[/]")
