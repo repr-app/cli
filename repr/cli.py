@@ -3580,20 +3580,22 @@ Use when: User wants a unified view of commits and AI sessions, or needs to unde
 
 ```bash
 # Stage files
-repr add .py              # Stage *.py files
+repr add py               # Stage *.py files
 repr add .                # Stage all
-repr add src/             # Stage directory
 
-# Generate message and commit
+# Create branch (AI generates name from staged)
+repr branch               # AI generates name
+repr branch feat/my-feat  # Explicit name
+
+# Commit (AI generates message)
 repr commit               # AI generates message
 repr commit -m "fix: x"   # Custom message
-repr commit -r            # Regenerate message
 
-# Push to remote
+# Push
 repr push
 ```
 
-Use when: User wants to stage, commit with AI-generated message, or push.
+Use when: User wants to stage, branch, commit with AI-generated message, or push.
 
 ## Tips
 
@@ -4677,40 +4679,44 @@ def timeline_serve(
 _COMMIT_MSG_CACHE_FILE = Path.home() / ".repr" / ".commit_message_cache"
 
 
-COMMIT_MESSAGE_SYSTEM = """You generate concise git commit messages. Given the staged changes, write a commit message following conventional commit format:
+COMMIT_MESSAGE_SYSTEM = """You generate git commit messages and branch names. Given staged changes, output JSON with:
 
-<type>: <description>
+{
+  "branch": "<type>/<short-description>",
+  "message": "<type>: <description>"
+}
 
 Types: feat, fix, refactor, docs, style, test, chore
 
 Rules:
-- First line under 72 chars
-- Use imperative mood ("add" not "added")
-- Be specific about what changed
-- No period at end of first line
+- Branch: lowercase, hyphens, no spaces (e.g., feat/add-user-auth)
+- Message: under 72 chars, imperative mood, no period at end
 
-Output only the commit message, nothing else."""
+Output only valid JSON."""
 
-COMMIT_MESSAGE_USER = """Generate a commit message for these staged changes:
+COMMIT_MESSAGE_USER = """Generate branch name and commit message for these staged changes:
 
 {changes}"""
 
 
-def _get_cached_commit_message() -> Optional[str]:
-    """Get cached commit message if it exists."""
+def _get_cached_commit_info() -> Optional[dict]:
+    """Get cached commit info (branch + message) if it exists."""
     if _COMMIT_MSG_CACHE_FILE.exists():
-        return _COMMIT_MSG_CACHE_FILE.read_text().strip()
+        try:
+            return json.loads(_COMMIT_MSG_CACHE_FILE.read_text())
+        except Exception:
+            return None
     return None
 
 
-def _set_cached_commit_message(message: str):
-    """Cache the commit message."""
+def _set_cached_commit_info(branch: str, message: str):
+    """Cache the commit info."""
     _COMMIT_MSG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _COMMIT_MSG_CACHE_FILE.write_text(message)
+    _COMMIT_MSG_CACHE_FILE.write_text(json.dumps({"branch": branch, "message": message}))
 
 
-def _clear_cached_commit_message():
-    """Clear the cached commit message."""
+def _clear_cached_commit_info():
+    """Clear the cached commit info."""
     if _COMMIT_MSG_CACHE_FILE.exists():
         _COMMIT_MSG_CACHE_FILE.unlink()
 
@@ -4718,6 +4724,7 @@ def _clear_cached_commit_message():
 @app.command("add")
 def add_files(
     pattern: str = typer.Argument(..., help="File pattern to stage (glob pattern)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force add ignored files"),
 ):
     """
     Stage files matching pattern.
@@ -4725,9 +4732,10 @@ def add_files(
     Run `repr commit` to generate a message and commit.
 
     Examples:
-        repr add py               # Stage *.py files
+        repr add cli              # Stage files containing "cli"
+        repr add .py              # Stage files containing ".py"
         repr add .                # Stage all
-        repr add src/             # Stage src directory
+        repr add cli -f           # Force add ignored files
     """
     import subprocess
     from .change_synthesis import get_repo, get_staged_changes
@@ -4737,28 +4745,59 @@ def add_files(
         print_error("Not a git repository")
         raise typer.Exit(1)
 
-    # Normalize pattern to glob
-    # py -> *.py, .py -> *.py, ts -> *.ts
-    if pattern not in (".", "*") and "/" not in pattern and "*" not in pattern:
-        if not pattern.startswith("."):
-            pattern = "*." + pattern
-        else:
-            pattern = "*" + pattern
-
-    # Stage files
-    try:
-        result = subprocess.run(
-            ["git", "add", pattern],
+    # Special case: "." means all
+    if pattern == ".":
+        try:
+            cmd = ["git", "add", "."]
+            if force:
+                cmd.insert(2, "-f")
+            result = subprocess.run(cmd, cwd=repo.working_dir, capture_output=True, text=True)
+            if result.returncode != 0:
+                print_error(f"Failed to stage files: {result.stderr}")
+                raise typer.Exit(1)
+        except Exception as e:
+            print_error(f"Failed to stage files: {e}")
+            raise typer.Exit(1)
+    else:
+        # Grep-style match: find files containing pattern
+        # Get modified/untracked files
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
             cwd=repo.working_dir,
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0:
-            print_error(f"Failed to stage files: {result.stderr}")
+        if status_result.returncode != 0:
+            print_error(f"Failed to get status: {status_result.stderr}")
             raise typer.Exit(1)
-    except Exception as e:
-        print_error(f"Failed to stage files: {e}")
-        raise typer.Exit(1)
+
+        # Parse status output and filter by pattern
+        matching_files = []
+        for line in status_result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            # Format: XY filename or XY orig -> renamed
+            file_path = line[3:].split(" -> ")[-1].strip()
+            if pattern.lower() in file_path.lower():
+                matching_files.append(file_path)
+
+        if not matching_files:
+            print_warning(f"No changed files matching '{pattern}'")
+            raise typer.Exit(0)
+
+        # Stage matching files
+        try:
+            cmd = ["git", "add"]
+            if force:
+                cmd.append("-f")
+            cmd.extend(matching_files)
+            result = subprocess.run(cmd, cwd=repo.working_dir, capture_output=True, text=True)
+            if result.returncode != 0:
+                print_error(f"Failed to stage files: {result.stderr}")
+                raise typer.Exit(1)
+        except Exception as e:
+            print_error(f"Failed to stage files: {e}")
+            raise typer.Exit(1)
 
     staged = get_staged_changes(repo)
     if not staged:
@@ -4777,16 +4816,119 @@ def add_files(
     print_info("Run `repr commit` to generate message and commit")
 
 
+@app.command("branch")
+def create_branch(
+    name: Optional[str] = typer.Argument(None, help="Branch name (optional, AI generates if omitted)"),
+    regenerate: bool = typer.Option(False, "--regenerate", "-r", help="Regenerate branch name"),
+):
+    """
+    Create and switch to a new branch.
+
+    If no name given, generates one from staged or unpushed changes.
+
+    Examples:
+        repr branch                    # AI generates name
+        repr branch feat/my-feature    # Use explicit name
+        repr branch -r                 # Regenerate name
+    """
+    import subprocess
+    from .change_synthesis import get_repo, get_staged_changes, get_unpushed_commits, format_file_changes, format_commit_changes
+
+    repo = get_repo(Path.cwd())
+    if not repo:
+        print_error("Not a git repository")
+        raise typer.Exit(1)
+
+    branch_name = name
+
+    if not branch_name:
+        # Check cache first
+        cached = _get_cached_commit_info()
+        if cached and cached.get("branch") and not regenerate:
+            branch_name = cached["branch"]
+            console.print(f"[{BRAND_MUTED}](cached)[/]")
+        else:
+            # Generate from staged or unpushed changes
+            staged = get_staged_changes(repo)
+            unpushed = get_unpushed_commits(repo)
+
+            if not staged and not unpushed:
+                print_error("No staged or unpushed changes to generate branch name from")
+                print_info("Run `repr add <pattern>` first, or provide a name")
+                raise typer.Exit(1)
+
+            from .openai_analysis import get_openai_client
+
+            client = get_openai_client()
+            if not client:
+                print_error("LLM not configured. Run `repr llm setup` first, or provide a name")
+                raise typer.Exit(1)
+
+            # Build context from staged and/or unpushed
+            changes_str = ""
+            if staged:
+                changes_str += "Staged changes:\n" + format_file_changes(staged) + "\n\n"
+            if unpushed:
+                changes_str += "Unpushed commits:\n" + format_commit_changes(unpushed)
+
+            prompt = COMMIT_MESSAGE_USER.format(changes=changes_str)
+
+            with create_spinner("Generating branch name..."):
+                response = asyncio.run(client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": COMMIT_MESSAGE_SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3,
+                ))
+                data = json.loads(response.choices[0].message.content)
+                branch_name = data.get("branch", "")
+                commit_msg = data.get("message", "")
+
+            # Cache both
+            _set_cached_commit_info(branch_name, commit_msg)
+
+    console.print(f"[bold]Branch:[/] {branch_name}")
+
+    try:
+        result = subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            cwd=repo.working_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            if "already exists" in result.stderr:
+                # Switch to existing branch
+                result = subprocess.run(
+                    ["git", "checkout", branch_name],
+                    cwd=repo.working_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print_success(f"Switched to {branch_name}")
+                    return
+            print_error(f"Failed: {result.stderr}")
+            raise typer.Exit(1)
+
+        print_success(f"Created and switched to {branch_name}")
+
+    except Exception as e:
+        print_error(f"Failed: {e}")
+        raise typer.Exit(1)
+
+
 @app.command("commit")
 def commit_staged(
     message: Optional[str] = typer.Option(None, "--message", "-m", help="Custom message (skip AI)"),
     regenerate: bool = typer.Option(False, "--regenerate", "-r", help="Regenerate message"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation on main/master"),
 ):
     """
     Generate commit message and commit staged changes.
-
-    Generates an AI commit message based on staged files (cached).
-    Use -m for custom message, -r to regenerate.
 
     Examples:
         repr commit                    # Generate and commit
@@ -4795,11 +4937,48 @@ def commit_staged(
     """
     import subprocess
     from .change_synthesis import get_repo, get_staged_changes, format_file_changes
+    from .config import get_config_value, set_config_value
 
     repo = get_repo(Path.cwd())
     if not repo:
         print_error("Not a git repository")
         raise typer.Exit(1)
+
+    # Check if on main/master
+    current_branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=repo.working_dir,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    if current_branch in ("main", "master") and not yes:
+        allow_main = get_config_value("allow_commit_to_main")
+        if allow_main is None:
+            # Ask user
+            print_warning(f"You're about to commit directly to {current_branch}")
+            console.print()
+            response = typer.prompt(
+                "Allow commits to main/master? [y]es / [n]o / [a]lways / [never]",
+                default="n",
+            ).lower()
+
+            if response in ("a", "always"):
+                set_config_value("allow_commit_to_main", True)
+                console.print(f"[{BRAND_MUTED}]Preference saved. Use `repr config set allow_commit_to_main false` to reset.[/]")
+            elif response in ("never",):
+                set_config_value("allow_commit_to_main", False)
+                console.print(f"[{BRAND_MUTED}]Preference saved. Use `repr config set allow_commit_to_main true` to reset.[/]")
+                print_info("Create a branch first: repr branch")
+                raise typer.Exit(0)
+            elif response not in ("y", "yes"):
+                print_info("Create a branch first: repr branch")
+                raise typer.Exit(0)
+        elif allow_main is False:
+            print_warning(f"Commits to {current_branch} are disabled")
+            print_info("Create a branch first: repr branch")
+            print_info("Or use: repr config set allow_commit_to_main true")
+            raise typer.Exit(0)
 
     staged = get_staged_changes(repo)
     if not staged:
@@ -4818,14 +4997,16 @@ def commit_staged(
     console.print()
 
     # Get commit message
+    commit_msg = None
+
     if message:
         commit_msg = message
     else:
         # Check cache
-        cached_msg = _get_cached_commit_message()
-        if cached_msg and not regenerate:
-            commit_msg = cached_msg
-            console.print(f"[bold]Commit message:[/] [{BRAND_MUTED}](cached)[/]")
+        cached = _get_cached_commit_info()
+        if cached and cached.get("message") and not regenerate:
+            commit_msg = cached["message"]
+            console.print(f"[{BRAND_MUTED}](cached)[/]")
         else:
             # Generate with LLM
             from .openai_analysis import get_openai_client
@@ -4845,14 +5026,16 @@ def commit_staged(
                         {"role": "system", "content": COMMIT_MESSAGE_SYSTEM},
                         {"role": "user", "content": prompt},
                     ],
+                    response_format={"type": "json_object"},
                     temperature=0.3,
                 ))
-                commit_msg = response.choices[0].message.content.strip()
+                data = json.loads(response.choices[0].message.content)
+                branch_name = data.get("branch", "")
+                commit_msg = data.get("message", "")
 
-            _set_cached_commit_message(commit_msg)
-            console.print(f"[bold]Commit message:[/]")
+            _set_cached_commit_info(branch_name, commit_msg)
 
-    console.print(f"  {commit_msg}")
+    console.print(f"[bold]Message:[/] {commit_msg}")
     console.print()
 
     try:
@@ -4866,7 +5049,7 @@ def commit_staged(
             print_error(f"Commit failed: {result.stderr}")
             raise typer.Exit(1)
 
-        _clear_cached_commit_message()
+        _clear_cached_commit_info()
         print_success("Committed")
 
         sha_result = subprocess.run(
