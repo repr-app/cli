@@ -47,6 +47,7 @@ dev = [
 
 [project.scripts]
 repr = "repr.cli:app"
+rp = "repr.cli:app"
 
 [project.urls]
 Homepage = "https://repr.dev"

@@ -173,6 +173,84 @@ def main(
 
 
 # =============================================================================
+# DASHBOARD
+# =============================================================================
+
+@app.command("dashboard")
+def dashboard(
+    port: int = typer.Option(
+        3000, "--port", "-p",
+        help="Port to serve on",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Host to bind to",
+    ),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open",
+        help="Auto-open browser (default: enabled)",
+    ),
+):
+    """
+    Launch web dashboard for exploring your stories.
+
+    Starts a local web server to browse and search through your
+    stories with rich context visualization.
+
+    Works from any directory - reads from central SQLite database.
+
+    Examples:
+        repr dashboard              # localhost:3000, auto-opens browser
+        repr dashboard --port 8080  # custom port
+        repr dashboard --no-open    # don't auto-open browser
+        rp dashboard                # using the 'rp' alias
+    """
+    import webbrowser
+    from .dashboard import run_server
+    from .db import DB_PATH, get_db
+
+    # Check if SQLite database exists and has stories
+    if not DB_PATH.exists():
+        print_error("No stories database found")
+        print_info("Run `repr generate` in a git repository first")
+        raise typer.Exit(1)
+
+    db = get_db()
+    stats = db.get_stats()
+    story_count = stats.get("story_count", 0)
+    project_count = stats.get("project_count", 0)
+
+    if story_count == 0:
+        print_error("No stories in database")
+        print_info("Run `repr generate` to create stories from commits")
+        raise typer.Exit(1)
+
+    console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
+
+    url = f"http://{host}:{port}"
+
+    print_header()
+    console.print(f"  URL: [bold blue]{url}[/]")
+    console.print()
+    console.print("[dim]Press Ctrl+C to stop[/]")
+    console.print()
+
+    if open_browser:
+        webbrowser.open(url)
+
+    try:
+        run_server(port, host)
+    except KeyboardInterrupt:
+        console.print()
+        print_info("Server stopped")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print_error(f"Port {port} is already in use")
+            print_info(f"Try: repr dashboard --port {port + 1}")
+        raise
+
+
+# =============================================================================
 # INIT
 # =============================================================================
 
@@ -772,7 +850,7 @@ def generate(
     elif all_generated_stories:
         console.print()
         print_success(f"Generated {len(all_generated_stories)} stories")
-        print_info("Run `repr timeline serve` to view")
+        print_info("Run `repr dashboard` to view")
 
 
 async def _generate_stories_async(
@@ -3599,8 +3677,8 @@ repr timeline status
 # Refresh/update timeline
 repr timeline refresh
 
-# Serve timeline viewer in browser
-repr timeline serve
+# Launch web dashboard
+repr dashboard
 ```
 
 Use when: User wants a unified view of commits and AI sessions, or needs to understand the full context of their development work.
@@ -4646,7 +4724,7 @@ def timeline_ingest_session(
         console.print(f"  Entry type: {entry_type.value if entry_type else 'merged'}")
 
 
-@timeline_app.command("serve")
+@timeline_app.command("serve", hidden=True)
 def timeline_serve(
     port: int = typer.Option(
         3000, "--port", "-p",
@@ -4662,62 +4740,12 @@ def timeline_serve(
     ),
 ):
     """
-    Launch web dashboard for timeline exploration.
+    [Deprecated] Use 'repr dashboard' instead.
 
-    Starts a local web server to browse and search through your
-    timeline entries with rich context visualization.
-
-    Works from any directory - reads from central SQLite database.
-
-    Examples:
-        repr timeline serve              # localhost:3000, auto-opens browser
-        repr timeline serve --port 8080  # custom port
-        repr timeline serve --no-open    # don't auto-open browser
+    Alias for backward compatibility - calls 'repr dashboard'.
     """
-    import webbrowser
-    from .dashboard import run_server
-    from .db import DB_PATH, get_db
-
-    # Check if SQLite database exists and has stories
-    if not DB_PATH.exists():
-        print_error("No stories database found")
-        print_info("Run `repr generate` in a git repository first")
-        raise typer.Exit(1)
-
-    db = get_db()
-    stats = db.get_stats()
-    story_count = stats.get("story_count", 0)
-    project_count = stats.get("project_count", 0)
-
-    if story_count == 0:
-        print_error("No stories in database")
-        print_info("Run `repr generate` to create stories from commits")
-        raise typer.Exit(1)
-
-    console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
-
-    url = f"http://{host}:{port}"
-    
-    print_header()
-    console.print(f"  URL: [bold blue]{url}[/]")
-    console.print()
-    console.print("[dim]Press Ctrl+C to stop[/]")
-    console.print()
-    
-    if open_browser:
-        webbrowser.open(url)
-    
-    try:
-        run_server(port, host)
-    except KeyboardInterrupt:
-        console.print()
-        print_info("Server stopped")
-    except OSError as e:
-        if "Address already in use" in str(e):
-            print_error(f"Port {port} is already in use")
-            print_info(f"Try: repr timeline serve --port {port + 1}")
-        else:
-            raise
+    print_info("Note: 'repr timeline serve' is deprecated. Use 'repr dashboard' instead.")
+    dashboard(port=port, host=host, open_browser=open_browser)
 
 
 # =============================================================================
@@ -5477,6 +5505,84 @@ def main(
 
 
 # =============================================================================
+# DASHBOARD
+# =============================================================================
+
+@app.command("dashboard")
+def dashboard(
+    port: int = typer.Option(
+        3000, "--port", "-p",
+        help="Port to serve on",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Host to bind to",
+    ),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open",
+        help="Auto-open browser (default: enabled)",
+    ),
+):
+    """
+    Launch web dashboard for exploring your stories.
+
+    Starts a local web server to browse and search through your
+    stories with rich context visualization.
+
+    Works from any directory - reads from central SQLite database.
+
+    Examples:
+        repr dashboard              # localhost:3000, auto-opens browser
+        repr dashboard --port 8080  # custom port
+        repr dashboard --no-open    # don't auto-open browser
+        rp dashboard                # using the 'rp' alias
+    """
+    import webbrowser
+    from .dashboard import run_server
+    from .db import DB_PATH, get_db
+
+    # Check if SQLite database exists and has stories
+    if not DB_PATH.exists():
+        print_error("No stories database found")
+        print_info("Run `repr generate` in a git repository first")
+        raise typer.Exit(1)
+
+    db = get_db()
+    stats = db.get_stats()
+    story_count = stats.get("story_count", 0)
+    project_count = stats.get("project_count", 0)
+
+    if story_count == 0:
+        print_error("No stories in database")
+        print_info("Run `repr generate` to create stories from commits")
+        raise typer.Exit(1)
+
+    console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
+
+    url = f"http://{host}:{port}"
+
+    print_header()
+    console.print(f"  URL: [bold blue]{url}[/]")
+    console.print()
+    console.print("[dim]Press Ctrl+C to stop[/]")
+    console.print()
+
+    if open_browser:
+        webbrowser.open(url)
+
+    try:
+        run_server(port, host)
+    except KeyboardInterrupt:
+        console.print()
+        print_info("Server stopped")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print_error(f"Port {port} is already in use")
+            print_info(f"Try: repr dashboard --port {port + 1}")
+        raise
+
+
+# =============================================================================
 # INIT
 # =============================================================================
 
@@ -6076,7 +6182,7 @@ def generate(
     elif all_generated_stories:
         console.print()
         print_success(f"Generated {len(all_generated_stories)} stories")
-        print_info("Run `repr timeline serve` to view")
+        print_info("Run `repr dashboard` to view")
 
 
 async def _generate_stories_async(
@@ -8903,8 +9009,8 @@ repr timeline status
 # Refresh/update timeline
 repr timeline refresh
 
-# Serve timeline viewer in browser
-repr timeline serve
+# Launch web dashboard
+repr dashboard
 ```
 
 Use when: User wants a unified view of commits and AI sessions, or needs to understand the full context of their development work.
@@ -9955,7 +10061,7 @@ def timeline_ingest_session(
         console.print(f"  Entry type: {entry_type.value if entry_type else 'merged'}")
 
 
-@timeline_app.command("serve")
+@timeline_app.command("serve", hidden=True)
 def timeline_serve(
     port: int = typer.Option(
         3000, "--port", "-p",
@@ -9971,62 +10077,12 @@ def timeline_serve(
     ),
 ):
     """
-    Launch web dashboard for timeline exploration.
+    [Deprecated] Use 'repr dashboard' instead.
 
-    Starts a local web server to browse and search through your
-    timeline entries with rich context visualization.
-
-    Works from any directory - reads from central SQLite database.
-
-    Examples:
-        repr timeline serve              # localhost:3000, auto-opens browser
-        repr timeline serve --port 8080  # custom port
-        repr timeline serve --no-open    # don't auto-open browser
+    Alias for backward compatibility - calls 'repr dashboard'.
     """
-    import webbrowser
-    from .dashboard import run_server
-    from .db import DB_PATH, get_db
-
-    # Check if SQLite database exists and has stories
-    if not DB_PATH.exists():
-        print_error("No stories database found")
-        print_info("Run `repr generate` in a git repository first")
-        raise typer.Exit(1)
-
-    db = get_db()
-    stats = db.get_stats()
-    story_count = stats.get("story_count", 0)
-    project_count = stats.get("project_count", 0)
-
-    if story_count == 0:
-        print_error("No stories in database")
-        print_info("Run `repr generate` to create stories from commits")
-        raise typer.Exit(1)
-
-    console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
-
-    url = f"http://{host}:{port}"
-    
-    print_header()
-    console.print(f"  URL: [bold blue]{url}[/]")
-    console.print()
-    console.print("[dim]Press Ctrl+C to stop[/]")
-    console.print()
-    
-    if open_browser:
-        webbrowser.open(url)
-    
-    try:
-        run_server(port, host)
-    except KeyboardInterrupt:
-        console.print()
-        print_info("Server stopped")
-    except OSError as e:
-        if "Address already in use" in str(e):
-            print_error(f"Port {port} is already in use")
-            print_info(f"Try: repr timeline serve --port {port + 1}")
-        else:
-            raise
+    print_info("Note: 'repr timeline serve' is deprecated. Use 'repr dashboard' instead.")
+    dashboard(port=port, host=host, open_browser=open_browser)
 
 
 # =============================================================================
