@@ -321,6 +321,7 @@ class Story(BaseModel):
     # implementation_details already exists above - the how
     insight: str = Field(default="", description="Engineering lesson - transferable principle")
     show: str | None = Field(default=None, description="Visual - code block, diagram, before/after")
+    post_body: str = Field(default="", description="LLM-generated natural post text")
 
     # Legacy fields (for backward compatibility during migration)
     public_post: str = Field(default="", description="[Legacy] Build-in-public post text")

@@ -1032,9 +1032,11 @@ async def transform_story_for_feed(
 
 def _build_post_body_public(hook: str, what: str, value: str, insight: str) -> str:
     """Build natural post body for public mode."""
+    what_clean = what.rstrip(".").rstrip()
+    value_clean = value.lstrip(".").lstrip()
     return (
         f"{hook}\n\n"
-        f"{what}. {value}\n"
+        f"{what_clean}. {value_clean}\n"
         f"{insight}"
     ).strip()
 
@@ -1042,9 +1044,11 @@ def _build_post_body_public(hook: str, what: str, value: str, insight: str) -> s
 def _build_post_body_internal(hook: str, problem: str, what: str, how: list[str], insight: str) -> str:
     """Build natural post body for internal mode."""
     detail = how[0] if how else ""
-    body = f"{hook}\n\n{problem}\n\n{what}."
+    what_clean = what.rstrip(".").rstrip()
+    body = f"{hook}\n\n{problem}\n\n{what_clean}."
     if detail:
-        body += f" First change: {detail}."
+        detail_clean = detail.rstrip(".").rstrip()
+        body += f" First change: {detail_clean}."
     body += f" {insight}"
     return body.strip()
 
