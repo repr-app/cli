@@ -55,28 +55,52 @@ class BatchAnalysis(BaseModel):
 # =============================================================================
 # Prompts
 # =============================================================================
-
 PUBLIC_STORY_SYSTEM = """You're creating structured content for a developer's "build in public" feed.
 
-Given a technical story, extract and compose its key elements into the Tripartite Codex format:
+Write like a real developer logging progress, not a blog or marketing post.
 
-1. HOOK (<60 chars): An engagement hook - story opener that draws readers in.
-   Vary the style: transformation ("This used to crash. Now it doesn't."),
-   confession ("Should have done this months ago."), observation ("Turns out null checks aren't optional."),
-   quiet victory ("It finally works the way I imagined."), or curiosity ("The bug that only happened on Tuesdays.").
-   Be authentic, not clickbait. NEVER be repetitive or cheesy.
+Tone rules (VERY IMPORTANT):
+- Prefer first-person when natural ("I")
+- Be specific and concrete
+- Sound like a Slack message to teammates
+- Avoid grand metaphors and philosophical language
+- Avoid generic lessons or "universal truths"
+- Slight messiness is OK — polish is not the goal
+- No hype, no thought-leader tone
 
-2. WHAT (1 sentence): The behavioral primitive - what observable change happened.
-   This is the keystone both engineers and users can understand.
+Given a technical story, compose:
 
-3. VALUE (1 sentence): External why - why users/stakeholders should care.
-   The narrative impetus, the emotional/practical value.
+1. HOOK (<60 chars):
+   A short first-person dev-log opener.
+   Focus on a problem, realization, or change.
+   Examples:
+   - "I got tired of doing timezone math."
+   - "This kept crashing until I found why."
+   - "I finally fixed the story engine docs."
+   Avoid clickbait and drama.
 
-4. INSIGHT (1 sentence): The transferable engineering lesson or principle demonstrated.
-   Something another developer could apply elsewhere.
+2. WHAT (1 sentence):
+   What you actually changed.
+   Concrete, observable behavior only.
 
-5. SHOW (optional): A visual that illustrates the change - code block, before/after, diagram.
-   Only include if it genuinely adds clarity.
+3. VALUE (1 sentence):
+   Why this matters to users or teammates.
+   Practical impact > abstract value.
+
+4. INSIGHT (1 sentence):
+   A grounded takeaway from THIS change.
+   Not universal wisdom — just what you learned.
+
+5. SHOW (optional):
+   Code or before/after only if it adds clarity.
+
+6. POST_BODY (2–5 sentences):
+   Write the final post in a natural voice.
+   - First person
+   - Mention what changed and why
+   - Include one small detail (a file/function/user pain) for authenticity
+   - You MAY include the insight, but do NOT label it "Insight:"
+   - Should not feel templated or like a changelog
 
 Output JSON with these exact fields:
 - "hook": string (<60 chars)
@@ -84,9 +108,11 @@ Output JSON with these exact fields:
 - "value": string (1 sentence)
 - "insight": string (1 sentence)
 - "show": string or null
+- "post_body": string
 """
 
-PUBLIC_STORY_USER = """Extract structured content from this technical story:
+
+PUBLIC_STORY_USER = """Turn this into a first-person build-in-public dev log:
 
 Title: {title}
 Category: {category}
@@ -95,40 +121,63 @@ Approach: {approach}
 Outcome: {outcome}
 Implementation Details: {implementation_details}
 
-Output valid JSON with "hook", "what", "value", "insight", and "show" fields."""
+Write like a developer explaining their own work.
 
+Output valid JSON with "hook", "what", "value", "insight", "show", and "post_body" fields."""
 
-INTERNAL_STORY_SYSTEM = """You're creating structured content for a developer's internal feed with full technical context.
+INTERNAL_STORY_SYSTEM = """You're creating structured content for a developer's internal feed.
 
-Given a technical story, extract all elements into the Tripartite Codex format:
+Write like an engineer documenting work for teammates.
 
-1. HOOK (<60 chars): An engagement hook - story opener that draws readers in.
-   Vary the style: transformation, confession, observation, quiet victory, or curiosity.
-   Be authentic, not clickbait. NEVER be repetitive.
+Tone rules:
+- First-person preferred
+- Direct and practical
+- No marketing or philosophical tone
+- Say what happened, why, and what changed
+- Avoid abstract language
 
-2. WHAT (1 sentence): The behavioral primitive - what observable change happened.
+Given a technical story:
 
-3. VALUE (1 sentence): External why - why users/stakeholders should care.
+1. HOOK (<60 chars):
+   A short first-person dev-log line.
 
-4. PROBLEM (1 sentence): Internal why - what was broken/missing that motivated this.
+2. WHAT (1 sentence):
+   Observable change made.
 
-5. HOW (list): Implementation details - specific technical changes made.
+3. VALUE (1 sentence):
+   Why this helps users or the team.
 
-6. INSIGHT (1 sentence): The transferable engineering lesson.
+4. PROBLEM (1 sentence):
+   What was broken or missing.
 
-7. SHOW (optional): A visual that illustrates the change.
+5. HOW (list):
+   Concrete technical actions taken (files/functions/patterns).
 
-Output JSON with these exact fields:
-- "hook": string (<60 chars)
-- "what": string (1 sentence)
-- "value": string (1 sentence)
-- "problem": string (1 sentence)
-- "how": array of strings (implementation details)
-- "insight": string (1 sentence)
-- "show": string or null
+6. INSIGHT (1 sentence):
+   Practical lesson from this change.
+
+7. SHOW (optional):
+   Only include if useful.
+
+8. POST_BODY (3–6 sentences):
+   A natural internal update for teammates.
+   - First person
+   - Mention the problem briefly, what you changed, and any gotchas
+   - Reference 1–2 concrete details (file/function/config)
+   - No templated structure, no headings
+
+Output JSON with:
+- "hook"
+- "what"
+- "value"
+- "problem"
+- "how"
+- "insight"
+- "show"
+- "post_body"
 """
 
-INTERNAL_STORY_USER = """Extract full structured content from this technical story:
+INTERNAL_STORY_USER = """Extract this as a first-person internal dev log:
 
 Title: {title}
 Category: {category}
@@ -139,8 +188,9 @@ Implementation Details: {implementation_details}
 Decisions: {decisions}
 Files: {files}
 
-Output valid JSON with "hook", "what", "value", "problem", "how", "insight", and "show" fields."""
+Write like a developer explaining their own work.
 
+Output valid JSON with "hook", "what", "value", "problem", "how", "insight", "show", and "post_body" fields."""
 
 STORY_SYNTHESIS_SYSTEM = """You analyze git commits and group them into coherent "stories" - logical units of work.
 
@@ -172,6 +222,9 @@ Rules:
 - Every commit must appear in exactly one story
 - NEVER leave problem, approach, or implementation_details empty
 - Be specific: "Added `UserAuth` class with JWT validation" not "Added auth"
+- Use plain engineering language in titles and summaries
+- Avoid dramatic or philosophical phrasing
+- Prefer literal descriptions over metaphors
 """
 
 STORY_SYNTHESIS_USER = """Analyze these commits and group them into stories with FULL context:
@@ -509,21 +562,21 @@ class StorySynthesizer:
     ) -> tuple[list[Story], ContentIndex]:
         """
         Synthesize stories from a batch of commits.
-        
+
         Args:
             commits: Commits to analyze (ordered by time)
             sessions: Optional sessions to link
-        
+
         Returns:
             Tuple of (stories, updated_index)
         """
         if not commits:
             return [], ContentIndex()
-        
+
         # Get LLM analysis
         client = self._get_client()
         commits_text = self._format_commits_for_prompt(commits)
-        
+
         try:
             response = await client.chat.completions.create(
                 model=self.model.split("/")[-1] if "/" in self.model else self.model,
@@ -536,9 +589,9 @@ class StorySynthesizer:
                 response_format={"type": "json_object"},
                 temperature=0.3,
             )
-            
+
             content = response.choices[0].message.content
-            
+
             # Strip markdown code fences if present (many models wrap JSON in ```json blocks)
             content = content.strip()
             if content.startswith("```"):
@@ -549,21 +602,21 @@ class StorySynthesizer:
                 # Remove closing fence
                 if content.endswith("```"):
                     content = content[:-3].rstrip()
-            
+
             # Debug: show raw response if REPR_DEBUG is set
             import os
             if os.environ.get("REPR_DEBUG"):
                 print(f"DEBUG: Raw LLM response ({len(content)} chars):")
                 print(content[:1000])
-            
+
             analysis = BatchAnalysis.model_validate_json(content)
-            
+
         except Exception as e:
             # Log the error for debugging
             import os
             if os.environ.get("REPR_DEBUG"):
                 print(f"DEBUG: Exception in LLM call: {type(e).__name__}: {e}")
-            
+
             # Fallback: each commit is its own story
             analysis = BatchAnalysis(stories=[
                 StoryBoundary(
@@ -573,6 +626,15 @@ class StorySynthesizer:
                 )
                 for c in commits
             ])
+        finally:
+            # Close the AsyncOpenAI client to avoid event loop closed errors
+            try:
+                await client.close()
+            except RuntimeError:
+                # Event loop already closed, ignore
+                pass
+            # Clear cached client so it can be recreated on next use
+            self._client = None
         
         # Build commit lookup - support both full and prefix matching
         commit_map = {c.sha: c for c in commits}
@@ -854,6 +916,7 @@ class PublicStory(BaseModel):
     value: str = Field(description="External why - user/stakeholder value")
     insight: str = Field(description="Transferable engineering lesson")
     show: str | None = Field(default=None, description="Optional visual/code block")
+    post_body: str = Field(description="Final natural post text (2–5 sentences)")
 
 
 class InternalStory(BaseModel):
@@ -865,6 +928,7 @@ class InternalStory(BaseModel):
     how: list[str] = Field(default_factory=list, description="Implementation details")
     insight: str = Field(description="Transferable engineering lesson")
     show: str | None = Field(default=None, description="Optional visual/code block")
+    post_body: str = Field(description="Final natural internal update (3–6 sentences)")
 
 
 async def transform_story_for_feed(
@@ -944,8 +1008,10 @@ async def transform_story_for_feed(
 
         result = response_model.model_validate_json(content)
 
-        # Quality check: if hook is empty or too generic, regenerate
+        # Quality check: if hook is empty or too generic, or post_body is empty/short, regenerate
         if not result.hook or len(result.hook) < 10:
+            result = _enhance_with_fallback(result, story, mode)
+        elif not result.post_body or len(result.post_body.strip()) < 40:
             result = _enhance_with_fallback(result, story, mode)
 
         return result
@@ -953,6 +1019,34 @@ async def transform_story_for_feed(
     except Exception as e:
         # Fallback: construct structured content from available data
         return _build_fallback_codex(story, mode)
+    finally:
+        # Close the AsyncOpenAI client to avoid event loop closed errors
+        try:
+            await client.close()
+        except RuntimeError:
+            # Event loop already closed, ignore
+            pass
+        # Clear cached client so it can be recreated on next use
+        synthesizer._client = None
+
+
+def _build_post_body_public(hook: str, what: str, value: str, insight: str) -> str:
+    """Build natural post body for public mode."""
+    return (
+        f"{hook}\n\n"
+        f"{what}. {value}\n"
+        f"{insight}"
+    ).strip()
+
+
+def _build_post_body_internal(hook: str, problem: str, what: str, how: list[str], insight: str) -> str:
+    """Build natural post body for internal mode."""
+    detail = how[0] if how else ""
+    body = f"{hook}\n\n{problem}\n\n{what}."
+    if detail:
+        body += f" First change: {detail}."
+    body += f" {insight}"
+    return body.strip()
 
 
 def _build_fallback_codex(story: Story, mode: str) -> PublicStory | InternalStory:
@@ -1035,22 +1129,28 @@ def _build_fallback_codex(story: Story, mode: str) -> PublicStory | InternalStor
     insight = category_insights.get(story.category, "Incremental progress adds up.")
 
     if mode == "public":
+        post_body = _build_post_body_public(hook, what, value, insight)
         return PublicStory(
             hook=hook,
             what=what,
             value=value,
             insight=insight,
             show=None,
+            post_body=post_body,
         )
     else:
+        problem = story.problem or "Needed improvement."
+        how = story.implementation_details or []
+        post_body = _build_post_body_internal(hook, problem, what, how, insight)
         return InternalStory(
             hook=hook,
             what=what,
             value=value,
-            problem=story.problem or "Needed improvement.",
-            how=story.implementation_details or [],
+            problem=problem,
+            how=how,
             insight=insight,
             show=None,
+            post_body=post_body,
         )
 
 
@@ -1073,22 +1173,37 @@ def _enhance_with_fallback(result: PublicStory | InternalStory, story: Story, mo
     new_hook = random.choice(hooks)
 
     if mode == "public":
+        what = result.what or story.title
+        value = result.value or story.outcome or "Improvement shipped."
+        insight = result.insight or "Progress is progress."
+        post_body = getattr(result, "post_body", "") or _build_post_body_public(
+            new_hook, what, value, insight
+        )
         return PublicStory(
             hook=new_hook,
-            what=result.what or story.title,
-            value=result.value or story.outcome or "Improvement shipped.",
-            insight=result.insight or "Progress is progress.",
+            what=what,
+            value=value,
+            insight=insight,
             show=result.show,
+            post_body=post_body,
         )
     else:
+        what = result.what or story.title
+        problem = result.problem if hasattr(result, 'problem') and result.problem else (story.problem or "")
+        how = result.how if hasattr(result, 'how') and result.how else (story.implementation_details or [])
+        insight = result.insight or "Progress is progress."
+        post_body = getattr(result, "post_body", "") or _build_post_body_internal(
+            new_hook, problem, what, how, insight
+        )
         return InternalStory(
             hook=new_hook,
-            what=result.what or story.title,
+            what=what,
             value=result.value or story.outcome or "Improvement shipped.",
-            problem=result.problem if hasattr(result, 'problem') else story.problem or "",
-            how=result.how if hasattr(result, 'how') else story.implementation_details or [],
-            insight=result.insight or "Progress is progress.",
+            problem=problem,
+            how=how,
+            insight=insight,
             show=result.show,
+            post_body=post_body,
         )
 
 
@@ -1096,7 +1211,7 @@ def _enhance_with_fallback(result: PublicStory | InternalStory, story: Story, mo
 def _build_fallback_post(story: Story) -> str:
     """Build a legacy post string from story data."""
     result = _build_fallback_codex(story, "public")
-    return f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+    return result.post_body
 
 
 def transform_story_for_feed_sync(
