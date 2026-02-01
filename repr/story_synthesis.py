@@ -43,6 +43,8 @@ class StoryBoundary(BaseModel):
     outcome: str = Field(default="")
     lessons: list[str] = Field(default_factory=list)
     category: str = Field(default="feature")
+    diagram: str | None = Field(default=None, description="ASCII diagram explaining the change")
+    technologies: list[str] = Field(default_factory=list, description="Resume-worthy skills demonstrated")
 
 
 class BatchAnalysis(BaseModel):
@@ -199,7 +201,7 @@ Your job:
 2. Group related commits into meaningful stories (features, fixes, refactors)
 3. For each group, extract the WHY/WHAT/HOW context
 
-IMPORTANT: Prefer grouping commits over creating many small stories. A story should represent a complete unit of value or logical change. 
+IMPORTANT: Prefer grouping commits over creating many small stories. A story should represent a complete unit of value or logical change.
 - If multiple commits relate to the same feature, GROUP THEM.
 - If a commit is a small fix for a previous commit in the batch, GROUP THEM.
 
@@ -217,6 +219,30 @@ Required fields for each story:
   * Any APIs, libraries, or frameworks involved
 - decisions: List of key choices made, format: ["Chose X because Y", ...]
 - category: One of: feature, bugfix, refactor, perf, infra, docs, test, chore
+- technologies: Resume-worthy skills demonstrated (REQUIRED - be specific):
+  * Frameworks/libraries: React, FastAPI, scikit-learn, PyTorch, Next.js, Prisma, SQLAlchemy
+  * Infrastructure: Kubernetes, Docker, Terraform, AWS Lambda, GCP, Nginx
+  * Tools/practices: CI/CD, GitHub Actions, Redis, PostgreSQL, GraphQL, REST API
+  * Patterns: WebSockets, OAuth, JWT, Event-driven, CQRS
+  * NOT just languages - those are inferred from files
+
+Optional field:
+- diagram: ASCII diagram explaining the change visually (null if not helpful)
+  Include a diagram ONLY when it adds clarity for:
+  * Architecture changes (component relationships, data flow)
+  * State machine or flow changes (before/after)
+  * API/interface changes (request/response flow)
+  * Refactoring (module structure changes)
+
+  Diagram style: Use simple box-and-arrow ASCII art. Max 15 lines.
+  Example:
+  ```
+  Before:           After:
+  [Client]          [Client]
+      |                 |
+      v                 v
+  [Server]          [Cache] --> [Server]
+  ```
 
 Rules:
 - Every commit must appear in exactly one story
@@ -246,10 +272,14 @@ Example format:
         "Updated User model with password_hash field and bcrypt hashing"
       ],
       "decisions": ["Chose JWT over sessions for stateless scaling"],
-      "category": "feature"
+      "category": "feature",
+      "technologies": ["JWT", "bcrypt", "FastAPI", "SQLAlchemy", "REST API"],
+      "diagram": "[Client] --> [Auth API] --> [JWT Service]\\n                |\\n                v\\n            [User DB]"
     }}
   ]
-}}"""
+}}
+
+Note: "diagram" is optional. Only include when it clarifies architecture/flow changes."""
 
 
 # =============================================================================
@@ -683,9 +713,9 @@ class StorySynthesizer:
                     if any(sha in session.linked_commits for sha in boundary.commit_shas):
                         linked_sessions.append(session.session_id)
             
-            # Detect technologies from files
+            # Use LLM-extracted technologies, fall back to file-based detection
             files_list = sorted(all_files)[:50]  # Cap at 50 files
-            technologies = self._detect_tech_stack(files_list)
+            technologies = boundary.technologies if boundary.technologies else self._detect_tech_stack(files_list)
 
             # Extract detailed file changes and snippets for recall
             file_changes, total_ins, total_del = extract_file_changes_from_commits(matched_shas)
@@ -715,6 +745,7 @@ class StorySynthesizer:
                 files=files_list,
                 started_at=started_at,
                 ended_at=ended_at,
+                diagram=boundary.diagram,
                 # Recall data
                 file_changes=file_changes,
                 key_snippets=key_snippets,
@@ -1032,9 +1063,11 @@ async def transform_story_for_feed(
 
 def _build_post_body_public(hook: str, what: str, value: str, insight: str) -> str:
     """Build natural post body for public mode."""
+    what_clean = what.rstrip(".").rstrip()
+    value_clean = value.lstrip(".").lstrip()
     return (
         f"{hook}\n\n"
-        f"{what}. {value}\n"
+        f"{what_clean}. {value_clean}\n"
         f"{insight}"
     ).strip()
 
@@ -1042,9 +1075,11 @@ def _build_post_body_public(hook: str, what: str, value: str, insight: str) -> s
 def _build_post_body_internal(hook: str, problem: str, what: str, how: list[str], insight: str) -> str:
     """Build natural post body for internal mode."""
     detail = how[0] if how else ""
-    body = f"{hook}\n\n{problem}\n\n{what}."
+    what_clean = what.rstrip(".").rstrip()
+    body = f"{hook}\n\n{problem}\n\n{what_clean}."
     if detail:
-        body += f" First change: {detail}."
+        detail_clean = detail.rstrip(".").rstrip()
+        body += f" First change: {detail_clean}."
     body += f" {insight}"
     return body.strip()
 

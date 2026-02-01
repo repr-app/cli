@@ -25,6 +25,7 @@ from typing import Optional, List, Dict, Callable
 from collections import defaultdict
 
 import typer
+from rich.markup import escape as rich_escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -520,10 +521,14 @@ def generate(
         False, "--json",
         help="Output as JSON",
     ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Reprocess commits even if already in existing stories",
+    ),
 ):
     """
     Generate stories from commits.
-    
+
     Examples:
         repr generate --local
         repr generate --cloud
@@ -531,6 +536,7 @@ def generate(
         repr generate --days 30
         repr generate --template changelog
         repr generate --commits abc123,def456
+        repr generate --force  # Reprocess all commits
     """
     import asyncio
     from .timeline import extract_commits_from_git, detect_project_root
@@ -634,12 +640,29 @@ def generate(
         else:
              filter_days = days if days else 90
              repo_commits = extract_commits_from_git(repo_path, days=filter_days)
-        
+
         if not repo_commits:
             if not json_output:
                 console.print(f"  No matching commits found")
             continue
-            
+
+        # Filter out commits that are already part of existing stories (unless --force)
+        from .db import get_db
+        db = get_db()
+        project_id = db.register_project(repo_path, repo_path.name)
+        processed_shas = db.get_processed_commits(project_id)
+        if processed_shas and not force:
+            original_count = len(repo_commits)
+            repo_commits = [c for c in repo_commits if c.sha not in processed_shas]
+            skipped = original_count - len(repo_commits)
+            if skipped > 0 and not json_output:
+                console.print(f"  [{BRAND_MUTED}]Skipping {skipped} already-processed commits[/]")
+
+        if not repo_commits:
+            if not json_output:
+                console.print(f"  No new commits to process")
+            continue
+
         if not json_output:
              console.print(f"  Analyzing {len(repo_commits)} commits...")
 
@@ -682,6 +705,7 @@ def generate(
                         story.value = result.value
                         story.insight = result.insight
                         story.show = result.show
+                        story.post_body = result.post_body
 
                         # Internal-specific fields
                         if hasattr(result, 'problem') and result.problem:
@@ -690,7 +714,9 @@ def generate(
                             story.implementation_details = result.how
 
                         # Legacy fields for backward compatibility
-                        story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+                        what_clean = result.what.rstrip(".").rstrip()
+                        value_clean = result.value.lstrip(".").lstrip()
+                        story.public_post = f"{result.hook}\n\n{what_clean}. {value_clean}\n\nInsight: {result.insight}"
                         story.internal_post = story.public_post
                         story.public_show = result.show
                         story.internal_show = result.show
@@ -702,7 +728,10 @@ def generate(
                         story.what = result.what
                         story.value = result.value
                         story.insight = result.insight
-                        story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+                        story.post_body = result.post_body
+                        what_clean = result.what.rstrip(".").rstrip()
+                        value_clean = result.value.lstrip(".").lstrip()
+                        story.public_post = f"{result.hook}\n\n{what_clean}. {value_clean}\n\nInsight: {result.insight}"
                         story.internal_post = story.public_post
 
             # Save to SQLite
@@ -3134,10 +3163,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Staged changes
@@ -3160,10 +3190,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Unpushed commits
@@ -4097,13 +4128,20 @@ def timeline_show(
                 # New Tripartite Codex format
                 console.print(f"[bold]{story.hook}[/]")
                 console.print()
-                what_text = story.what.rstrip(".")
-                console.print(f"{what_text}. {story.value}")
+                what_text = story.what.rstrip(".").rstrip()
+                value_text = story.value.lstrip(".").lstrip()
+                console.print(f"{what_text}. {value_text}")
 
                 # Show block if present
                 if story.show:
                     console.print()
                     console.print(f"```\n{story.show}\n```")
+
+                # Diagram if present
+                if story.diagram:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Diagram:[/]")
+                    console.print(f"```\n{story.diagram}\n```")
 
                 # Internal mode: show problem and how
                 if internal:
@@ -4344,6 +4382,7 @@ def timeline_refresh(
             story.value = result.value
             story.insight = result.insight
             story.show = result.show
+            story.post_body = result.post_body
 
             # Internal-specific fields
             if hasattr(result, 'problem') and result.problem:
@@ -4352,7 +4391,9 @@ def timeline_refresh(
                 story.implementation_details = result.how
 
             # Legacy fields for backward compatibility
-            story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+            what_clean = result.what.rstrip(".").rstrip()
+            value_clean = result.value.lstrip(".").lstrip()
+            story.public_post = f"{result.hook}\n\n{what_clean}. {value_clean}\n\nInsight: {result.insight}"
             story.internal_post = story.public_post
             story.public_show = result.show
             story.internal_show = result.show
@@ -4854,6 +4895,65 @@ def add_files(
         print_info("Run `repr commit` to generate message and commit")
 
 
+@app.command("unstage")
+def unstage_files(
+    pattern: str = typer.Argument(..., help="File pattern to unstage (grep-style match)"),
+):
+    """
+    Unstage files matching pattern.
+
+    Examples:
+        repr unstage cli           # Unstage files containing "cli"
+        repr unstage .py           # Unstage files containing ".py"
+        repr unstage .             # Unstage all staged files
+    """
+    import subprocess
+    from .change_synthesis import get_repo, get_staged_changes
+
+    repo = get_repo(Path.cwd())
+    if not repo:
+        print_error("Not a git repository")
+        raise typer.Exit(1)
+
+    # Get currently staged files
+    staged = get_staged_changes(repo)
+    if not staged:
+        print_warning("No staged files")
+        raise typer.Exit(0)
+
+    # Special case: "." means all
+    if pattern == ".":
+        matching_files = [f.path for f in staged]
+    else:
+        # Grep-style regex match
+        import re
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            regex = re.compile(re.escape(pattern), re.IGNORECASE)
+        matching_files = [f.path for f in staged if regex.search(f.path)]
+
+    if not matching_files:
+        print_warning(f"No staged files matching '{pattern}'")
+        raise typer.Exit(0)
+
+    # Unstage matching files
+    try:
+        cmd = ["git", "restore", "--staged"] + matching_files
+        result = subprocess.run(cmd, cwd=repo.working_dir, capture_output=True, text=True)
+        if result.returncode != 0:
+            print_error(f"Failed to unstage files: {result.stderr}")
+            raise typer.Exit(1)
+    except Exception as e:
+        print_error(f"Failed to unstage files: {e}")
+        raise typer.Exit(1)
+
+    # Show what was unstaged
+    console.print(f"[bold]Unstaged {len(matching_files)} files[/]")
+    for f in matching_files:
+        console.print(f"  - {f}")
+
+
 @app.command("branch")
 def create_branch(
     name: Optional[str] = typer.Argument(None, help="Branch name (optional, AI generates if omitted)"),
@@ -5219,6 +5319,7 @@ from typing import Optional, List, Dict, Callable
 from collections import defaultdict
 
 import typer
+from rich.markup import escape as rich_escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
@@ -5714,10 +5815,14 @@ def generate(
         False, "--json",
         help="Output as JSON",
     ),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Reprocess commits even if already in existing stories",
+    ),
 ):
     """
     Generate stories from commits.
-    
+
     Examples:
         repr generate --local
         repr generate --cloud
@@ -5725,6 +5830,7 @@ def generate(
         repr generate --days 30
         repr generate --template changelog
         repr generate --commits abc123,def456
+        repr generate --force  # Reprocess all commits
     """
     import asyncio
     from .timeline import extract_commits_from_git, detect_project_root
@@ -5828,12 +5934,29 @@ def generate(
         else:
              filter_days = days if days else 90
              repo_commits = extract_commits_from_git(repo_path, days=filter_days)
-        
+
         if not repo_commits:
             if not json_output:
                 console.print(f"  No matching commits found")
             continue
-            
+
+        # Filter out commits that are already part of existing stories (unless --force)
+        from .db import get_db
+        db = get_db()
+        project_id = db.register_project(repo_path, repo_path.name)
+        processed_shas = db.get_processed_commits(project_id)
+        if processed_shas and not force:
+            original_count = len(repo_commits)
+            repo_commits = [c for c in repo_commits if c.sha not in processed_shas]
+            skipped = original_count - len(repo_commits)
+            if skipped > 0 and not json_output:
+                console.print(f"  [{BRAND_MUTED}]Skipping {skipped} already-processed commits[/]")
+
+        if not repo_commits:
+            if not json_output:
+                console.print(f"  No new commits to process")
+            continue
+
         if not json_output:
              console.print(f"  Analyzing {len(repo_commits)} commits...")
 
@@ -5876,6 +5999,7 @@ def generate(
                         story.value = result.value
                         story.insight = result.insight
                         story.show = result.show
+                        story.post_body = result.post_body
 
                         # Internal-specific fields
                         if hasattr(result, 'problem') and result.problem:
@@ -5884,7 +6008,9 @@ def generate(
                             story.implementation_details = result.how
 
                         # Legacy fields for backward compatibility
-                        story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+                        what_clean = result.what.rstrip(".").rstrip()
+                        value_clean = result.value.lstrip(".").lstrip()
+                        story.public_post = f"{result.hook}\n\n{what_clean}. {value_clean}\n\nInsight: {result.insight}"
                         story.internal_post = story.public_post
                         story.public_show = result.show
                         story.internal_show = result.show
@@ -5896,7 +6022,10 @@ def generate(
                         story.what = result.what
                         story.value = result.value
                         story.insight = result.insight
-                        story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+                        story.post_body = result.post_body
+                        what_clean = result.what.rstrip(".").rstrip()
+                        value_clean = result.value.lstrip(".").lstrip()
+                        story.public_post = f"{result.hook}\n\n{what_clean}. {value_clean}\n\nInsight: {result.insight}"
                         story.internal_post = story.public_post
 
             # Save to SQLite
@@ -8328,10 +8457,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Staged changes
@@ -8354,10 +8484,11 @@ def changes(
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
+                    escaped_line = rich_escape(line)
                     if line.startswith("+"):
-                        console.print(f"    [{BRAND_SUCCESS}]{line}[/]")
+                        console.print(f"    [{BRAND_SUCCESS}]{escaped_line}[/]")
                     elif line.startswith("-"):
-                        console.print(f"    [{BRAND_ERROR}]{line}[/]")
+                        console.print(f"    [{BRAND_ERROR}]{escaped_line}[/]")
         console.print()
 
     # Unpushed commits
@@ -9296,13 +9427,20 @@ def timeline_show(
                 # New Tripartite Codex format
                 console.print(f"[bold]{story.hook}[/]")
                 console.print()
-                what_text = story.what.rstrip(".")
-                console.print(f"{what_text}. {story.value}")
+                what_text = story.what.rstrip(".").rstrip()
+                value_text = story.value.lstrip(".").lstrip()
+                console.print(f"{what_text}. {value_text}")
 
                 # Show block if present
                 if story.show:
                     console.print()
                     console.print(f"```\n{story.show}\n```")
+
+                # Diagram if present
+                if story.diagram:
+                    console.print()
+                    console.print(f"[{BRAND_MUTED}]Diagram:[/]")
+                    console.print(f"```\n{story.diagram}\n```")
 
                 # Internal mode: show problem and how
                 if internal:
@@ -9543,6 +9681,7 @@ def timeline_refresh(
             story.value = result.value
             story.insight = result.insight
             story.show = result.show
+            story.post_body = result.post_body
 
             # Internal-specific fields
             if hasattr(result, 'problem') and result.problem:
@@ -9551,7 +9690,9 @@ def timeline_refresh(
                 story.implementation_details = result.how
 
             # Legacy fields for backward compatibility
-            story.public_post = f"{result.hook}\n\n{result.what}. {result.value}\n\nInsight: {result.insight}"
+            what_clean = result.what.rstrip(".").rstrip()
+            value_clean = result.value.lstrip(".").lstrip()
+            story.public_post = f"{result.hook}\n\n{what_clean}. {value_clean}\n\nInsight: {result.insight}"
             story.internal_post = story.public_post
             story.public_show = result.show
             story.internal_show = result.show
