@@ -41,7 +41,7 @@ All data is stored locally in `.repr/`:
 A completely redesigned premium dashboard allows you to explore your work history.
 
 ```bash
-repr timeline serve
+repr dashboard
 ```
 
 **Features:**
@@ -71,4 +71,4 @@ Agents can now answer questions like:
 If you have an existing `repr` setup:
 1.  **Update**: `pip install -U repr-cli`
 2.  **Synthesize**: Run `repr timeline synthesize --weeks 8` to backfill stories.
-3.  **Serve**: Run `repr timeline serve` to view the new dashboard.
+3.  **Serve**: Run `repr dashboard` to view the new dashboard.
