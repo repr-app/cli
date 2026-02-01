@@ -4847,9 +4847,9 @@ def add_files(
     try:
         branch_name = repo.active_branch.name
         if branch_name in ("main", "master"):
-            print_info("Run `repr branch` to create a feature branch")
+            print_info("Run `repr branch` to create a new feature branch")
         else:
-            print_info("Run `repr commit` to generate message and commit")
+            print_info("Run `repr commit` to generate message and commit, or `repr branch` to create a new feature branch")
     except Exception:
         print_info("Run `repr commit` to generate message and commit")
 
@@ -10046,9 +10046,9 @@ def add_files(
     try:
         branch_name = repo.active_branch.name
         if branch_name in ("main", "master"):
-            print_info("Run `repr branch` to create a feature branch")
+            print_info("Run `repr branch` to create a new feature branch")
         else:
-            print_info("Run `repr commit` to generate message and commit")
+            print_info("Run `repr commit` to generate message and commit, or `repr branch` to create a new feature branch")
     except Exception:
         print_info("Run `repr commit` to generate message and commit")
 
