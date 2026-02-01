@@ -3113,7 +3113,8 @@ def changes(
             stats = ""
             if f.insertions or f.deletions:
                 stats = f" [{BRAND_SUCCESS}]+{f.insertions}[/][{BRAND_ERROR}]-{f.deletions}[/]"
-            console.print(f"  {type_icon} {f.path}{stats}")
+            full_path = report.repo_path / f.path
+            console.print(f"  {type_icon} {full_path}{stats}")
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
@@ -3131,7 +3132,8 @@ def changes(
             stats = ""
             if f.insertions or f.deletions:
                 stats = f" [{BRAND_SUCCESS}]+{f.insertions}[/][{BRAND_ERROR}]-{f.deletions}[/]"
-            console.print(f"  {type_icon} {f.path}{stats}")
+            full_path = report.repo_path / f.path
+            console.print(f"  {type_icon} {full_path}{stats}")
             # Show diff preview unless compact mode
             if not compact and f.diff_preview:
                 for line in f.diff_preview.split("\n")[:10]:
@@ -3149,7 +3151,8 @@ def changes(
             # Show files changed in this commit
             for f in commit.files[:5]:
                 type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
-                console.print(f"    {type_icon} {f.path}")
+                full_path = report.repo_path / f.path
+                console.print(f"    {type_icon} {full_path}")
             if len(commit.files) > 5:
                 console.print(f"    [{BRAND_MUTED}]... +{len(commit.files) - 5} more[/]")
         console.print()
