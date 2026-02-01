@@ -80,10 +80,11 @@ def detect_session_source(project_path: str | Path) -> list[str]:
         project_path: Path to the project/repo
     
     Returns:
-        List of available sources: ["claude_code", "clawdbot"]
+        List of available sources: ["claude_code", "clawdbot", "gemini_antigravity"]
     """
     from .claude_code import ClaudeCodeLoader
     from .clawdbot import ClawdbotLoader
+    from .gemini_antigravity import GeminiAntigravityLoader
     
     sources = []
     project_path = Path(project_path).resolve()
@@ -97,6 +98,11 @@ def detect_session_source(project_path: str | Path) -> list[str]:
     clawdbot_loader = ClawdbotLoader()
     if clawdbot_loader.find_sessions(project_path):
         sources.append("clawdbot")
+    
+    # Check Gemini Antigravity
+    gemini_loader = GeminiAntigravityLoader()
+    if gemini_loader.find_sessions(project_path):
+        sources.append("gemini_antigravity")
     
     return sources
 
@@ -121,6 +127,7 @@ def load_sessions_for_project(
     """
     from .claude_code import ClaudeCodeLoader
     from .clawdbot import ClawdbotLoader
+    from .gemini_antigravity import GeminiAntigravityLoader
     
     # Calculate since from days_back if provided
     if days_back is not None and since is None:
@@ -134,6 +141,7 @@ def load_sessions_for_project(
     loaders = {
         "claude_code": ClaudeCodeLoader(),
         "clawdbot": ClawdbotLoader(),
+        "gemini_antigravity": GeminiAntigravityLoader(),
     }
     
     all_sessions = []

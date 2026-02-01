@@ -257,10 +257,29 @@ class ReprTimeline:
 # Story Models (1:M commits, 1:M sessions)
 # =============================================================================
 
+class CodeSnippet(BaseModel):
+    """A representative code snippet from a story's changes."""
+    file_path: str = Field(description="Path to the file")
+    language: str = Field(default="", description="Language for syntax highlighting")
+    content: str = Field(description="The code snippet")
+    line_start: int = Field(default=0, description="Starting line number")
+    line_count: int = Field(default=0, description="Number of lines in snippet")
+    context: str = Field(default="", description="Brief description of what this snippet shows")
+
+
+class FileChange(BaseModel):
+    """Summary of changes to a single file."""
+    file_path: str = Field(description="Path to the file")
+    change_type: str = Field(default="modified", description="added, modified, deleted, renamed")
+    insertions: int = Field(default=0, description="Lines added")
+    deletions: int = Field(default=0, description="Lines removed")
+    old_path: str | None = Field(default=None, description="Original path if renamed")
+
+
 class Story(BaseModel):
     """
     Coherent unit of work with WHY/WHAT context.
-    
+
     Stories are the intelligent layer that synthesizes:
     - Multiple commits (1:M) - raw data about WHAT changed
     - Multiple sessions (1:M) - enrichment about WHY
@@ -268,11 +287,12 @@ class Story(BaseModel):
     id: str  # UUID
     created_at: datetime
     updated_at: datetime
-    
+    project_id: str = Field(default="", description="ID of the project this story belongs to")
+
     # 1:M relationships (SHAs/IDs, not full objects)
     commit_shas: list[str] = Field(default_factory=list)
     session_ids: list[str] = Field(default_factory=list)
-    
+
     # Context (LLM-extracted or synthesized)
     title: str = Field(description="One-line title, e.g. 'Add OAuth popup flow'")
     problem: str = Field(default="", description="What was broken/missing")
@@ -282,15 +302,38 @@ class Story(BaseModel):
     tradeoffs: str = Field(default="", description="What was gained/lost")
     outcome: str = Field(default="", description="Observable result, metrics")
     lessons: list[str] = Field(default_factory=list, description="Gotchas, learnings")
-    
+
     # Metadata for filtering/display
     category: str = Field(default="feature", description="feature, bugfix, refactor, perf, infra, docs, test, chore")
     scope: str = Field(default="internal", description="user-facing, internal, platform, ops")
+    technologies: list[str] = Field(default_factory=list, description="Languages, frameworks, tools used")
     files: list[str] = Field(default_factory=list, description="Aggregated from commits")
-    
+
     # Timespan
     started_at: datetime | None = None  # First commit timestamp
     ended_at: datetime | None = None    # Last commit timestamp
+
+    # Structured story content (Tripartite Codex)
+    hook: str = Field(default="", description="Engagement hook - story opener, <60 chars")
+    what: str = Field(default="", description="Behavioral primitive - the observable change")
+    value: str = Field(default="", description="External why - user/stakeholder value")
+    # problem already exists above - internal why / what was broken
+    # implementation_details already exists above - the how
+    insight: str = Field(default="", description="Engineering lesson - transferable principle")
+    show: str | None = Field(default=None, description="Visual - code block, diagram, before/after")
+
+    # Legacy fields (for backward compatibility during migration)
+    public_post: str = Field(default="", description="[Legacy] Build-in-public post text")
+    public_show: str | None = Field(default=None, description="[Legacy] Optional code block for public post")
+    internal_post: str = Field(default="", description="[Legacy] Internal post with tech context")
+    internal_show: str | None = Field(default=None, description="[Legacy] Optional code block for internal post")
+    internal_details: list[str] = Field(default_factory=list, description="[Legacy] Technical implementation details")
+
+    # Recall/diff data (for internal developer view)
+    file_changes: list[FileChange] = Field(default_factory=list, description="Per-file change summary")
+    key_snippets: list[CodeSnippet] = Field(default_factory=list, description="Representative code snippets")
+    total_insertions: int = Field(default=0, description="Total lines added across all files")
+    total_deletions: int = Field(default=0, description="Total lines removed across all files")
 
 
 class StoryDigest(BaseModel):

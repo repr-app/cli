@@ -34,6 +34,7 @@ dependencies = [
     "keyring>=24.0.0",
     "pydantic>=2.0.0",
     "fastmcp>=2.0.0,<3",
+    "jinja2>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +56,9 @@ Repository = "https://github.com/repr-app/cli"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["repr*"]
+
+[tool.setuptools.package-data]
+"repr.dashboard" = ["templates/*.html"]
 
 [tool.black]
 line-length = 100

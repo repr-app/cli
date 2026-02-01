@@ -68,7 +68,7 @@ repr mcp serve
 
 `repr` now synthesizes **Stories** from your commits — coherent narratives that capture WHY and HOW you built something, not just WHAT changed.
 
-- **Synthesize**: Group related commits into stories with `repr timeline synthesize`
+- **Generate**: Create stories from your commits with `repr generate`
 - **Dashboard**: Explore your work in a premium dark-mode UI with `repr timeline serve`
 - **MCP Integration**: AI agents can answer questions about your implementation details
 
