@@ -3020,7 +3020,7 @@ def changes(
         exists=True,
         resolve_path=True,
     ),
-    synthesize: bool = typer.Option(False, "--synthesize", "-s", help="Use LLM to synthesize changes into story format"),
+    explain: bool = typer.Option(False, "--explain", "-e", help="Use LLM to explain changes"),
     compact: bool = typer.Option(False, "--compact", "-c", help="Compact output (no diff previews)"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
@@ -3035,13 +3035,13 @@ def changes(
     Example:
         repr changes              # Show changes with diffs
         repr changes --compact    # Just file names
-        repr changes --synthesize # LLM summary
+        repr changes --explain    # LLM summary
         repr changes --json
     """
     from .change_synthesis import (
         get_change_report,
         ChangeState,
-        synthesize_changes,
+        explain_group,
     )
 
     target_path = path or Path.cwd()
@@ -3101,6 +3101,15 @@ def changes(
         console.print(f"[{BRAND_MUTED}]Working tree clean, nothing staged, up to date with remote.[/]")
         raise typer.Exit()
 
+    # Get LLM client if explain mode
+    client = None
+    if explain:
+        from .openai_analysis import get_openai_client
+        client = get_openai_client()
+        if not client:
+            print_error("LLM not configured. Run `repr llm setup` first.")
+            raise typer.Exit(1)
+
     # Header
     console.print(f"[bold]Changes in {report.repo_path.name}[/]")
     console.print()
@@ -3108,6 +3117,13 @@ def changes(
     # Unstaged changes
     if report.unstaged:
         console.print(f"[bold][{BRAND_WARNING}]Unstaged[/][/] ({len(report.unstaged)} files)")
+        # Explain this group right after header
+        if client:
+            with create_spinner("Explaining unstaged..."):
+                explanation = asyncio.run(explain_group("unstaged", file_changes=report.unstaged, client=client))
+            console.print()
+            console.print(f"[{BRAND_MUTED}]{explanation}[/]")
+            console.print()
         for f in report.unstaged:
             type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
             stats = ""
@@ -3127,6 +3143,13 @@ def changes(
     # Staged changes
     if report.staged:
         console.print(f"[bold][{BRAND_SUCCESS}]Staged[/][/] ({len(report.staged)} files)")
+        # Explain this group right after header
+        if client:
+            with create_spinner("Explaining staged..."):
+                explanation = asyncio.run(explain_group("staged", file_changes=report.staged, client=client))
+            console.print()
+            console.print(f"[{BRAND_MUTED}]{explanation}[/]")
+            console.print()
         for f in report.staged:
             type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
             stats = ""
@@ -3146,6 +3169,13 @@ def changes(
     # Unpushed commits
     if report.unpushed:
         console.print(f"[bold][{BRAND_PRIMARY}]Unpushed[/][/] ({len(report.unpushed)} commits)")
+        # Explain this group right after header
+        if client:
+            with create_spinner("Explaining unpushed..."):
+                explanation = asyncio.run(explain_group("unpushed", commit_changes=report.unpushed, client=client))
+            console.print()
+            console.print(f"[{BRAND_MUTED}]{explanation}[/]")
+            console.print()
         for commit in report.unpushed:
             console.print(f"  [{BRAND_MUTED}]{commit.sha}[/] {commit.message}")
             # Show files changed in this commit
@@ -3156,36 +3186,6 @@ def changes(
             if len(commit.files) > 5:
                 console.print(f"    [{BRAND_MUTED}]... +{len(commit.files) - 5} more[/]")
         console.print()
-
-    # Synthesize if requested
-    if synthesize:
-        from .openai_analysis import get_openai_client
-
-        client = get_openai_client()
-        if not client:
-            print_error("LLM not configured. Run `repr llm setup` first.")
-            raise typer.Exit(1)
-
-        with create_spinner("Synthesizing changes..."):
-            summary = asyncio.run(synthesize_changes(report, client))
-            report.summary = summary
-
-        console.print("[bold]Summary[/]")
-        console.print()
-        if summary.hook:
-            console.print(f"[bold]Hook:[/] {summary.hook}")
-        if summary.what:
-            console.print(f"[bold]What:[/] {summary.what}")
-        if summary.value:
-            console.print(f"[bold]Value:[/] {summary.value}")
-        if summary.problem:
-            console.print(f"[bold]Problem:[/] {summary.problem}")
-        if summary.insight:
-            console.print(f"[bold]Insight:[/] {summary.insight}")
-        if summary.show:
-            console.print()
-            console.print("[bold]Show:[/]")
-            console.print(summary.show)
 
 
 @app.command()
@@ -3507,8 +3507,8 @@ repr changes
 # Compact view (just file names)
 repr changes --compact
 
-# With LLM synthesis into story format
-repr changes --synthesize
+# With LLM explanation
+repr changes --explain
 
 # JSON output
 repr changes --json
@@ -3576,12 +3576,32 @@ Use when: User wants a unified view of commits and AI sessions, or needs to unde
 - **session**: AI coding sessions (Claude Code, etc.)
 - **merged**: Commits with associated AI session context
 
+### Smart Git Workflow
+
+```bash
+# Stage files
+repr add .py              # Stage *.py files
+repr add .                # Stage all
+repr add src/             # Stage directory
+
+# Generate message and commit
+repr commit               # AI generates message
+repr commit -m "fix: x"   # Custom message
+repr commit -r            # Regenerate message
+
+# Push to remote
+repr push
+```
+
+Use when: User wants to stage, commit with AI-generated message, or push.
+
 ## Tips
 
 1. Run `repr changes` before committing to see what you're about to commit
 2. Use `repr generate --dry-run` to preview stories before saving
 3. Initialize timeline with `--with-sessions` to capture AI context
 4. Use `repr timeline show --type session` to see AI-assisted work separately
+5. Use `repr commit add` for quick commits with AI-generated messages
 '''
 
     skill_file.write_text(skill_content)
@@ -4647,6 +4667,299 @@ def timeline_serve(
             print_info(f"Try: repr timeline serve --port {port + 1}")
         else:
             raise
+
+
+# =============================================================================
+# GIT WORKFLOW COMMANDS (add, commit, push)
+# =============================================================================
+
+# File-based cache for commit message (persists between commands)
+_COMMIT_MSG_CACHE_FILE = Path.home() / ".repr" / ".commit_message_cache"
+
+
+COMMIT_MESSAGE_SYSTEM = """You generate concise git commit messages. Given the staged changes, write a commit message following conventional commit format:
+
+<type>: <description>
+
+Types: feat, fix, refactor, docs, style, test, chore
+
+Rules:
+- First line under 72 chars
+- Use imperative mood ("add" not "added")
+- Be specific about what changed
+- No period at end of first line
+
+Output only the commit message, nothing else."""
+
+COMMIT_MESSAGE_USER = """Generate a commit message for these staged changes:
+
+{changes}"""
+
+
+def _get_cached_commit_message() -> Optional[str]:
+    """Get cached commit message if it exists."""
+    if _COMMIT_MSG_CACHE_FILE.exists():
+        return _COMMIT_MSG_CACHE_FILE.read_text().strip()
+    return None
+
+
+def _set_cached_commit_message(message: str):
+    """Cache the commit message."""
+    _COMMIT_MSG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _COMMIT_MSG_CACHE_FILE.write_text(message)
+
+
+def _clear_cached_commit_message():
+    """Clear the cached commit message."""
+    if _COMMIT_MSG_CACHE_FILE.exists():
+        _COMMIT_MSG_CACHE_FILE.unlink()
+
+
+@app.command("add")
+def add_files(
+    pattern: str = typer.Argument(..., help="File pattern to stage (glob pattern)"),
+):
+    """
+    Stage files matching pattern.
+
+    Run `repr commit` to generate a message and commit.
+
+    Examples:
+        repr add py               # Stage *.py files
+        repr add .                # Stage all
+        repr add src/             # Stage src directory
+    """
+    import subprocess
+    from .change_synthesis import get_repo, get_staged_changes
+
+    repo = get_repo(Path.cwd())
+    if not repo:
+        print_error("Not a git repository")
+        raise typer.Exit(1)
+
+    # Normalize pattern to glob
+    # py -> *.py, .py -> *.py, ts -> *.ts
+    if pattern not in (".", "*") and "/" not in pattern and "*" not in pattern:
+        if not pattern.startswith("."):
+            pattern = "*." + pattern
+        else:
+            pattern = "*" + pattern
+
+    # Stage files
+    try:
+        result = subprocess.run(
+            ["git", "add", pattern],
+            cwd=repo.working_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print_error(f"Failed to stage files: {result.stderr}")
+            raise typer.Exit(1)
+    except Exception as e:
+        print_error(f"Failed to stage files: {e}")
+        raise typer.Exit(1)
+
+    staged = get_staged_changes(repo)
+    if not staged:
+        print_warning("No files matched pattern or nothing to stage")
+        raise typer.Exit(0)
+
+    # Show staged files
+    console.print(f"[bold]Staged {len(staged)} files[/]")
+    for f in staged:
+        type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
+        stats = ""
+        if f.insertions or f.deletions:
+            stats = f" [{BRAND_SUCCESS}]+{f.insertions}[/][{BRAND_ERROR}]-{f.deletions}[/]"
+        console.print(f"  {type_icon} {f.path}{stats}")
+    console.print()
+    print_info("Run `repr commit` to generate message and commit")
+
+
+@app.command("commit")
+def commit_staged(
+    message: Optional[str] = typer.Option(None, "--message", "-m", help="Custom message (skip AI)"),
+    regenerate: bool = typer.Option(False, "--regenerate", "-r", help="Regenerate message"),
+):
+    """
+    Generate commit message and commit staged changes.
+
+    Generates an AI commit message based on staged files (cached).
+    Use -m for custom message, -r to regenerate.
+
+    Examples:
+        repr commit                    # Generate and commit
+        repr commit -m "fix: typo"     # Custom message
+        repr commit -r                 # Regenerate message
+    """
+    import subprocess
+    from .change_synthesis import get_repo, get_staged_changes, format_file_changes
+
+    repo = get_repo(Path.cwd())
+    if not repo:
+        print_error("Not a git repository")
+        raise typer.Exit(1)
+
+    staged = get_staged_changes(repo)
+    if not staged:
+        print_warning("Nothing staged to commit")
+        print_info("Run `repr add <pattern>` first")
+        raise typer.Exit(0)
+
+    # Show staged files
+    console.print(f"[bold]Staged {len(staged)} files[/]")
+    for f in staged:
+        type_icon = {"A": "+", "M": "~", "D": "-", "R": "→"}.get(f.change_type, "?")
+        stats = ""
+        if f.insertions or f.deletions:
+            stats = f" [{BRAND_SUCCESS}]+{f.insertions}[/][{BRAND_ERROR}]-{f.deletions}[/]"
+        console.print(f"  {type_icon} {f.path}{stats}")
+    console.print()
+
+    # Get commit message
+    if message:
+        commit_msg = message
+    else:
+        # Check cache
+        cached_msg = _get_cached_commit_message()
+        if cached_msg and not regenerate:
+            commit_msg = cached_msg
+            console.print(f"[bold]Commit message:[/] [{BRAND_MUTED}](cached)[/]")
+        else:
+            # Generate with LLM
+            from .openai_analysis import get_openai_client
+
+            client = get_openai_client()
+            if not client:
+                print_error("LLM not configured. Run `repr llm setup` first, or use -m")
+                raise typer.Exit(1)
+
+            changes_str = format_file_changes(staged)
+            prompt = COMMIT_MESSAGE_USER.format(changes=changes_str)
+
+            with create_spinner("Generating commit message..."):
+                response = asyncio.run(client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": COMMIT_MESSAGE_SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                ))
+                commit_msg = response.choices[0].message.content.strip()
+
+            _set_cached_commit_message(commit_msg)
+            console.print(f"[bold]Commit message:[/]")
+
+    console.print(f"  {commit_msg}")
+    console.print()
+
+    try:
+        result = subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=repo.working_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print_error(f"Commit failed: {result.stderr}")
+            raise typer.Exit(1)
+
+        _clear_cached_commit_message()
+        print_success("Committed")
+
+        sha_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo.working_dir,
+            capture_output=True,
+            text=True,
+        )
+        if sha_result.returncode == 0:
+            console.print(f"  [{BRAND_MUTED}]{sha_result.stdout.strip()}[/]")
+
+    except Exception as e:
+        print_error(f"Commit failed: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("push")
+def push_commits():
+    """
+    Push commits to remote.
+
+    Examples:
+        repr push
+    """
+    import subprocess
+    from .change_synthesis import get_repo
+
+    repo = get_repo(Path.cwd())
+    if not repo:
+        print_error("Not a git repository")
+        raise typer.Exit(1)
+
+    # Check for unpushed commits
+    try:
+        result = subprocess.run(
+            ["git", "log", "@{u}..", "--oneline"],
+            cwd=repo.working_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            # No upstream, just push
+            pass
+        elif not result.stdout.strip():
+            print_info("Nothing to push")
+            raise typer.Exit(0)
+        else:
+            commits = result.stdout.strip().split("\n")
+            console.print(f"[bold]Pushing {len(commits)} commits[/]")
+            for c in commits[:5]:
+                console.print(f"  [{BRAND_MUTED}]{c}[/]")
+            if len(commits) > 5:
+                console.print(f"  [{BRAND_MUTED}]... +{len(commits) - 5} more[/]")
+            console.print()
+    except Exception:
+        pass
+
+    try:
+        with create_spinner("Pushing..."):
+            result = subprocess.run(
+                ["git", "push"],
+                cwd=repo.working_dir,
+                capture_output=True,
+                text=True,
+            )
+        if result.returncode != 0:
+            if "no upstream branch" in result.stderr:
+                # Try push with -u
+                branch = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=repo.working_dir,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                with create_spinner(f"Setting upstream and pushing {branch}..."):
+                    result = subprocess.run(
+                        ["git", "push", "-u", "origin", branch],
+                        cwd=repo.working_dir,
+                        capture_output=True,
+                        text=True,
+                    )
+                if result.returncode != 0:
+                    print_error(f"Push failed: {result.stderr}")
+                    raise typer.Exit(1)
+            else:
+                print_error(f"Push failed: {result.stderr}")
+                raise typer.Exit(1)
+
+        print_success("Pushed")
+
+    except Exception as e:
+        print_error(f"Push failed: {e}")
+        raise typer.Exit(1)
 
 
 # Entry point

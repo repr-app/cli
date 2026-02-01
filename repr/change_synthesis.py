@@ -379,6 +379,58 @@ def format_commit_changes(commits: list[CommitChange]) -> str:
     return "\n".join(lines)
 
 
+GROUP_EXPLAIN_SYSTEM = """You explain git changes concisely. Given a set of file changes, provide a brief 1-2 sentence summary of what's being changed and why it might matter. Be direct and specific."""
+
+GROUP_EXPLAIN_USER = """Explain these {group_type} changes briefly (1-2 sentences):
+
+{changes}"""
+
+
+async def explain_group(
+    group_type: str,
+    file_changes: list[FileChange] = None,
+    commit_changes: list[CommitChange] = None,
+    client=None,  # AsyncOpenAI
+    model: str = "gpt-4o-mini",
+) -> str:
+    """
+    Explain a single group of changes.
+
+    Args:
+        group_type: "unstaged", "staged", or "unpushed"
+        file_changes: List of file changes (for unstaged/staged)
+        commit_changes: List of commits (for unpushed)
+        client: AsyncOpenAI client
+        model: Model to use
+
+    Returns:
+        Brief explanation string
+    """
+    if commit_changes:
+        changes_str = format_commit_changes(commit_changes)
+    elif file_changes:
+        changes_str = format_file_changes(file_changes)
+    else:
+        return ""
+
+    prompt = GROUP_EXPLAIN_USER.format(
+        group_type=group_type,
+        changes=changes_str,
+    )
+
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": GROUP_EXPLAIN_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+
 async def synthesize_changes(
     report: ChangeReport,
     client,  # AsyncOpenAI
