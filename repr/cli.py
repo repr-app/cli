@@ -2719,6 +2719,7 @@ def data_clear(
     This permanently deletes:
     - All stories from the SQLite database
     - All story files from ~/.repr/stories/
+    - Local cache
 
     Projects registry and config are preserved.
 
@@ -2728,14 +2729,16 @@ def data_clear(
     """
     from .db import DB_PATH
     from .storage import STORIES_DIR
+    from .config import get_cache_size, clear_cache
     import shutil
 
     # Check what exists
     db_exists = DB_PATH.exists()
     stories_dir_exists = STORIES_DIR.exists()
+    cache_size = get_cache_size()
 
-    if not db_exists and not stories_dir_exists:
-        print_info("Nothing to clear - no database or stories found.")
+    if not db_exists and not stories_dir_exists and cache_size == 0:
+        print_info("Nothing to clear - no database, stories, or cache found.")
         return
 
     # Count what we're about to delete
@@ -2764,12 +2767,14 @@ def data_clear(
     if stories_dir_exists and stories_file_count > 0:
         console.print(f"  • Story files: {STORIES_DIR}")
         console.print(f"    {stories_file_count} files")
+    if cache_size > 0:
+        console.print(f"  • Cache: {format_bytes(cache_size)}")
     console.print()
     console.print("[dim]Projects registry and config will be preserved.[/]")
     console.print()
 
     if not force:
-        if not confirm("Are you sure you want to delete all stories?"):
+        if not confirm("Are you sure you want to delete all stories and cache?"):
             print_info("Cancelled")
             raise typer.Exit()
 
@@ -2797,11 +2802,16 @@ def data_clear(
             print_error(f"Failed to clear stories directory: {e}")
             raise typer.Exit(1)
 
-    print_success("All stories cleared")
+    # Clear cache
+    clear_cache()
+
+    print_success("All stories and cache cleared")
     if db_exists:
         console.print(f"  Deleted: {story_count} stories from database")
     if stories_file_count > 0:
         console.print(f"  Deleted: {stories_file_count} story files")
+    if cache_size > 0:
+        console.print(f"  Cleared: {format_bytes(cache_size)} from cache")
 
 
 # =============================================================================
@@ -8013,6 +8023,7 @@ def data_clear(
     This permanently deletes:
     - All stories from the SQLite database
     - All story files from ~/.repr/stories/
+    - Local cache
 
     Projects registry and config are preserved.
 
@@ -8022,14 +8033,16 @@ def data_clear(
     """
     from .db import DB_PATH
     from .storage import STORIES_DIR
+    from .config import get_cache_size, clear_cache
     import shutil
 
     # Check what exists
     db_exists = DB_PATH.exists()
     stories_dir_exists = STORIES_DIR.exists()
+    cache_size = get_cache_size()
 
-    if not db_exists and not stories_dir_exists:
-        print_info("Nothing to clear - no database or stories found.")
+    if not db_exists and not stories_dir_exists and cache_size == 0:
+        print_info("Nothing to clear - no database, stories, or cache found.")
         return
 
     # Count what we're about to delete
@@ -8058,12 +8071,14 @@ def data_clear(
     if stories_dir_exists and stories_file_count > 0:
         console.print(f"  • Story files: {STORIES_DIR}")
         console.print(f"    {stories_file_count} files")
+    if cache_size > 0:
+        console.print(f"  • Cache: {format_bytes(cache_size)}")
     console.print()
     console.print("[dim]Projects registry and config will be preserved.[/]")
     console.print()
 
     if not force:
-        if not confirm("Are you sure you want to delete all stories?"):
+        if not confirm("Are you sure you want to delete all stories and cache?"):
             print_info("Cancelled")
             raise typer.Exit()
 
@@ -8091,11 +8106,16 @@ def data_clear(
             print_error(f"Failed to clear stories directory: {e}")
             raise typer.Exit(1)
 
-    print_success("All stories cleared")
+    # Clear cache
+    clear_cache()
+
+    print_success("All stories and cache cleared")
     if db_exists:
         console.print(f"  Deleted: {story_count} stories from database")
     if stories_file_count > 0:
         console.print(f"  Deleted: {stories_file_count} story files")
+    if cache_size > 0:
+        console.print(f"  Cleared: {format_bytes(cache_size)} from cache")
 
 
 # =============================================================================
