@@ -262,6 +262,8 @@ class ReprDatabase:
             ("post_body", "''"),
             # v7: diagram
             ("diagram", "NULL"),
+            # v8: author_name
+            ("author_name", "'unknown'"),
         ]
 
         for col, default in required_columns:

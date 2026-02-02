@@ -726,10 +726,14 @@ class StorySynthesizer:
             sorted_shas = sorted(matched_shas)
             story_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"repr-story-{'-'.join(sorted_shas)}"))
 
+            # Extract author from first commit
+            author_name = story_commits[0].author if story_commits else "unknown"
+
             story = Story(
                 id=story_id,
                 created_at=now,
                 updated_at=now,
+                author_name=author_name,
                 commit_shas=matched_shas,  # Use full matched SHAs
                 session_ids=linked_sessions,
                 title=boundary.title,

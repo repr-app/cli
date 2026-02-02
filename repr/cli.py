@@ -227,6 +227,9 @@ def dashboard(
 
     console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
 
+    # Ensure dashboard is built (build on the fly if needed)
+    _ensure_dashboard_built()
+
     url = f"http://{host}:{port}"
 
     print_header()
@@ -248,6 +251,42 @@ def dashboard(
             print_error(f"Port {port} is already in use")
             print_info(f"Try: repr dashboard --port {port + 1}")
         raise
+
+
+def _ensure_dashboard_built():
+    """Build dashboard if index.html doesn't exist or source files are newer."""
+    from pathlib import Path
+
+    dashboard_dir = Path(__file__).parent / "dashboard"
+    src_dir = dashboard_dir / "src"
+    index_html = dashboard_dir / "index.html"
+
+    # If no source directory, can't build
+    if not src_dir.exists():
+        return
+
+    # Check if we need to build
+    needs_build = False
+
+    if not index_html.exists():
+        needs_build = True
+        reason = "index.html not found"
+    else:
+        # Check if any source file is newer than index.html
+        index_mtime = index_html.stat().st_mtime
+
+        for src_file in src_dir.rglob("*"):
+            if src_file.is_file() and src_file.stat().st_mtime > index_mtime:
+                needs_build = True
+                reason = f"{src_file.relative_to(dashboard_dir)} is newer than index.html"
+                break
+
+    if needs_build:
+        from .dashboard.build import build
+        print_info(f"Building dashboard ({reason})...")
+        result = build()
+        if result != 0:
+            print_warning("Dashboard build failed, using cached version if available")
 
 
 # =============================================================================
@@ -3559,12 +3598,10 @@ def mcp_install_skills(
         repr mcp install-skills
         repr mcp install-skills --force  # Overwrite existing
     """
-    plugin_dir = Path.home() / ".claude" / "plugins" / "local" / "repr"
-    skill_dir = plugin_dir / "skills" / "repr"
-    plugin_json_dir = plugin_dir / ".claude-plugin"
+    skill_dir = Path.home() / ".claude" / "skills"
+    skill_file = skill_dir / "repr.md"
 
     # Check if already installed
-    skill_file = skill_dir / "SKILL.md"
     if skill_file.exists() and not force:
         print_warning("repr skill already installed")
         console.print(f"  Location: {skill_file}")
@@ -3572,17 +3609,8 @@ def mcp_install_skills(
         console.print("Use --force to overwrite")
         return
 
-    # Create directories
+    # Create directory
     skill_dir.mkdir(parents=True, exist_ok=True)
-    plugin_json_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write plugin.json
-    plugin_json = {
-        "name": "repr",
-        "description": "Developer context layer - understand what you've actually worked on through git history and AI sessions.",
-        "author": {"name": "repr.dev"}
-    }
-    (plugin_json_dir / "plugin.json").write_text(json.dumps(plugin_json, indent=2) + "\n")
 
     # Write skill file
     skill_content = '''---
@@ -3727,7 +3755,6 @@ Use when: User wants to stage, commit with AI-generated message, or push.
 
     print_success("repr skill installed to Claude Code")
     console.print()
-    console.print(f"  Plugin: {plugin_dir}")
     console.print(f"  Skill: {skill_file}")
     console.print()
     console.print("Claude Code will now recognize repr commands.")
@@ -5559,6 +5586,9 @@ def dashboard(
 
     console.print(f"Starting dashboard with [bold]{story_count} stories[/] from [bold]{project_count} repositories[/]")
 
+    # Ensure dashboard is built (build on the fly if needed)
+    _ensure_dashboard_built()
+
     url = f"http://{host}:{port}"
 
     print_header()
@@ -5580,6 +5610,42 @@ def dashboard(
             print_error(f"Port {port} is already in use")
             print_info(f"Try: repr dashboard --port {port + 1}")
         raise
+
+
+def _ensure_dashboard_built():
+    """Build dashboard if index.html doesn't exist or source files are newer."""
+    from pathlib import Path
+
+    dashboard_dir = Path(__file__).parent / "dashboard"
+    src_dir = dashboard_dir / "src"
+    index_html = dashboard_dir / "index.html"
+
+    # If no source directory, can't build
+    if not src_dir.exists():
+        return
+
+    # Check if we need to build
+    needs_build = False
+
+    if not index_html.exists():
+        needs_build = True
+        reason = "index.html not found"
+    else:
+        # Check if any source file is newer than index.html
+        index_mtime = index_html.stat().st_mtime
+
+        for src_file in src_dir.rglob("*"):
+            if src_file.is_file() and src_file.stat().st_mtime > index_mtime:
+                needs_build = True
+                reason = f"{src_file.relative_to(dashboard_dir)} is newer than index.html"
+                break
+
+    if needs_build:
+        from .dashboard.build import build
+        print_info(f"Building dashboard ({reason})...")
+        result = build()
+        if result != 0:
+            print_warning("Dashboard build failed, using cached version if available")
 
 
 # =============================================================================
@@ -8891,12 +8957,10 @@ def mcp_install_skills(
         repr mcp install-skills
         repr mcp install-skills --force  # Overwrite existing
     """
-    plugin_dir = Path.home() / ".claude" / "plugins" / "local" / "repr"
-    skill_dir = plugin_dir / "skills" / "repr"
-    plugin_json_dir = plugin_dir / ".claude-plugin"
+    skill_dir = Path.home() / ".claude" / "skills"
+    skill_file = skill_dir / "repr.md"
 
     # Check if already installed
-    skill_file = skill_dir / "SKILL.md"
     if skill_file.exists() and not force:
         print_warning("repr skill already installed")
         console.print(f"  Location: {skill_file}")
@@ -8904,17 +8968,10 @@ def mcp_install_skills(
         console.print("Use --force to overwrite")
         return
 
-    # Create directories
+    # Create directory
     skill_dir.mkdir(parents=True, exist_ok=True)
-    plugin_json_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write plugin.json
-    plugin_json = {
-        "name": "repr",
-        "description": "Developer context layer - understand what you've actually worked on through git history and AI sessions.",
-        "author": {"name": "repr.dev"}
-    }
-    (plugin_json_dir / "plugin.json").write_text(json.dumps(plugin_json, indent=2) + "\n")
+    # Write skill file (standard markdown without plugin structure)
 
     # Write skill file
     skill_content = '''---
@@ -9064,7 +9121,6 @@ Use when: User wants to stage, branch, commit, push, or create PR.
 
     print_success("repr skill installed to Claude Code")
     console.print()
-    console.print(f"  Plugin: {plugin_dir}")
     console.print(f"  Skill: {skill_file}")
     console.print()
     console.print("Claude Code will now recognize repr commands.")
