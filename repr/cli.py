@@ -87,8 +87,6 @@ from .config import (
 )
 from .storage import (
     save_story,
-    load_story,
-    delete_story,
     get_story_count,
     get_unpushed_stories,
     mark_story_pushed,
@@ -245,6 +243,98 @@ def list_stories(
     return stories
 
 
+def load_story(story_id: str) -> tuple[str, dict[str, Any]] | None:
+    """
+    Load a story by ID from the database.
+
+    Args:
+        story_id: Story ULID
+
+    Returns:
+        Tuple of (content, metadata) or None if not found
+    """
+    db = get_db()
+    story = db.get_story(story_id)
+
+    if not story:
+        return None
+
+    # Convert Story model to markdown content
+    content = f"""# {story.title}
+
+## Problem
+{story.problem or "No problem specified."}
+
+## Approach
+{story.approach or "No approach specified."}
+
+## Tradeoffs
+{story.tradeoffs or "No tradeoffs specified."}
+
+## Outcome
+{story.outcome or "No outcome specified."}
+
+## Implementation Details
+{chr(10).join(f"- {d}" for d in story.implementation_details) if story.implementation_details else "None"}
+
+## Decisions
+{chr(10).join(f"- {d}" for d in story.decisions) if story.decisions else "None"}
+
+## Lessons
+{chr(10).join(f"- {l}" for l in story.lessons) if story.lessons else "None"}
+
+## Technologies
+{chr(10).join(f"- {t}" for t in story.technologies) if story.technologies else "None"}
+"""
+
+    # Build metadata dict (for backward compatibility)
+    metadata = {
+        "id": story.id,
+        "title": story.title,
+        "summary": story.title,  # For compatibility
+        "problem": story.problem,
+        "approach": story.approach,
+        "tradeoffs": story.tradeoffs,
+        "outcome": story.outcome,
+        "category": story.category,
+        "scope": story.scope,
+        "created_at": story.created_at.isoformat() if story.created_at else None,
+        "updated_at": story.updated_at.isoformat() if story.updated_at else None,
+        "started_at": story.started_at.isoformat() if story.started_at else None,
+        "ended_at": story.ended_at.isoformat() if story.ended_at else None,
+        "technologies": story.technologies,
+        "implementation_details": story.implementation_details,
+        "decisions": story.decisions,
+        "lessons": story.lessons,
+        "files": story.files,
+        "commit_shas": story.commit_shas,
+        "session_ids": story.session_ids,
+        "hook": story.hook,
+        "what": story.what,
+        "value": story.value,
+        "insight": story.insight,
+        "show": story.show,
+        "diagram": story.diagram,
+        "post_body": story.post_body,
+    }
+
+    return content, metadata
+
+
+def delete_story(story_id: str) -> bool:
+    """
+    Delete a story by ID from the database.
+
+    Args:
+        story_id: Story ULID
+
+    Returns:
+        True if deleted, False if not found
+    """
+    db = get_db()
+    return db.delete_story(story_id)
+
+
 # Create Typer app
 app = typer.Typer(
     name="repr",
@@ -265,6 +355,7 @@ mcp_app = typer.Typer(help="MCP server for AI agent integration")
 timeline_app = typer.Typer(help="Unified timeline of commits + AI sessions")
 friends_app = typer.Typer(help="Manage friends")
 skill_app = typer.Typer(help="Manage repr skill for AI agents")
+configure_app = typer.Typer(help="Configure repr (LLM, repos, schedule)")
 
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(cron_app, name="cron")
@@ -277,6 +368,7 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(timeline_app, name="timeline")
 app.add_typer(friends_app, name="friends")
 app.add_typer(skill_app, name="skill")
+app.add_typer(configure_app, name="configure")
 
 
 def version_callback(value: bool):
@@ -307,12 +399,20 @@ def main(
     ),
 ):
     """repr - understand what you've actually worked on.
-    
+
     Cloud features require sign-in. Local generation always works offline.
     """
     # Migrate plaintext auth tokens on startup
     migrate_plaintext_auth()
-    
+
+    # First-run detection: trigger wizard on first use
+    # Skip for: configure, --help, mcp (automated)
+    skip_first_run_commands = {"configure", "mcp", None}
+    if ctx.invoked_subcommand not in skip_first_run_commands:
+        from .configure import is_first_run, run_full_wizard
+        if is_first_run():
+            run_full_wizard()
+
     # Track command usage (if telemetry enabled)
     from .telemetry import track_command
     if ctx.invoked_subcommand:
@@ -2766,6 +2866,77 @@ def llm_test():
         console.print("[bold]BYOK Providers:[/]")
         for provider in status["byok"]["providers"]:
             console.print(f"  [{BRAND_SUCCESS}]✓[/] {provider}")
+
+
+# =============================================================================
+# CONFIGURE (unified setup wizard)
+# =============================================================================
+
+@configure_app.callback(invoke_without_command=True)
+def configure_main(ctx: typer.Context):
+    """
+    Configure repr settings (LLM, repos, schedule).
+
+    Run without arguments to see an interactive menu.
+    Use subcommands for direct configuration:
+
+        repr configure llm       Configure LLM provider
+        repr configure repos     Configure tracked repositories
+        repr configure schedule  Configure automatic generation
+
+    Example:
+        repr configure
+    """
+    if ctx.invoked_subcommand is None:
+        from .configure import run_configure_menu
+        run_configure_menu()
+
+
+@configure_app.command("llm")
+def configure_llm():
+    """
+    Configure LLM provider interactively.
+
+    Supports:
+    - Local: Ollama, LM Studio
+    - API: OpenAI, Anthropic, Gemini, Groq, Together, OpenRouter
+
+    Example:
+        repr configure llm
+    """
+    from .configure import wizard_llm
+    wizard_llm()
+
+
+@configure_app.command("repos")
+def configure_repos():
+    """
+    Configure tracked repositories.
+
+    Scans for git repositories and lets you select which to track.
+
+    Example:
+        repr configure repos
+    """
+    from .configure import wizard_repos
+    wizard_repos()
+
+
+@configure_app.command("schedule")
+def configure_schedule():
+    """
+    Configure automatic story generation schedule.
+
+    Options:
+    - Scheduled (cron) - Every N hours
+    - On commit (hooks) - After N commits
+    - Manual - Run `repr generate` yourself
+
+    Example:
+        repr configure schedule
+    """
+    from .configure import wizard_schedule
+    wizard_schedule()
 
 
 # =============================================================================
