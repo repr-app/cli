@@ -116,6 +116,8 @@ def select_with_filter(
         cycle_cursor=True,
         clear_screen=False,
         show_shortcut_hints=False,
+        show_search_hint=False,
+        search_key="/",
         search_highlight_style=("fg_yellow", "bold"),
     )
 
@@ -297,18 +299,34 @@ def list_openai_models(api_key: str, base_url: str = "https://api.openai.com/v1"
 
 
 def list_anthropic_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Anthropic models."""
-    return [
-        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
-        {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
-        {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet"},
-        {"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku"},
-        {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus"},
-    ]
+    """List available Anthropic models from API."""
+    try:
+        resp = httpx.get(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                display_name = m.get("display_name", model_id)
+                models.append({
+                    "id": model_id,
+                    "name": display_name,
+                })
+            return models
+    except Exception:
+        pass
+    return []
 
 
 def list_gemini_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Gemini models."""
+    """List available Gemini models from API."""
     try:
         resp = httpx.get(
             f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
@@ -323,21 +341,15 @@ def list_gemini_models(api_key: str) -> list[dict[str, Any]]:
                     models.append({
                         "id": name,
                         "name": m.get("displayName", name),
-                        "description": m.get("description", ""),
                     })
             return models
     except Exception:
         pass
-    # Fallback to known models
-    return [
-        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
-        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro"},
-        {"id": "gemini-2.0-flash-exp", "name": "Gemini 2.0 Flash"},
-    ]
+    return []
 
 
 def list_groq_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Groq models."""
+    """List available Groq models from API."""
     try:
         resp = httpx.get(
             "https://api.groq.com/openai/v1/models",
@@ -349,11 +361,7 @@ def list_groq_models(api_key: str) -> list[dict[str, Any]]:
             return [{"id": m["id"], "name": m["id"]} for m in data.get("data", [])]
     except Exception:
         pass
-    return [
-        {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B"},
-        {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B"},
-        {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B"},
-    ]
+    return []
 
 
 def list_provider_models(provider: str, api_key: str | None = None, url: str | None = None) -> list[dict[str, Any]]:
@@ -612,7 +620,9 @@ def _configure_api_llm(selected: dict) -> bool:
         models = list_provider_models(provider, api_key=api_key)
 
     if not models:
-        print_warning("Could not fetch models (key may still be valid)")
+        print_error("Could not fetch models - check your API key")
+        if not confirm("Continue with default model?"):
+            return False
         models = [{"id": info["default_model"], "name": info["default_model"]}]
 
     # Select model
