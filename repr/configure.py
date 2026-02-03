@@ -70,6 +70,7 @@ def select_option(options: list[str], title: str = "", default_index: int = 0) -
         menu_highlight_style=("fg_cyan", "bold"),
         cycle_cursor=True,
         clear_screen=False,
+        show_shortcut_hints=False,
     )
     index = menu.show()
     return index
@@ -114,8 +115,7 @@ def select_with_filter(
         menu_highlight_style=("fg_cyan", "bold"),
         cycle_cursor=True,
         clear_screen=False,
-        search_key=None,  # Disable default search
-        show_search_hint=True,
+        show_shortcut_hints=False,
         search_highlight_style=("fg_yellow", "bold"),
     )
 
@@ -777,8 +777,6 @@ def wizard_schedule() -> bool:
         "Manual only - Run `repr generate` yourself",
     ]
 
-        console.print()
-
     choice = select_option(schedule_options, title="How should repr generate stories?")
     if choice is None:
         choice = 0  # Default to scheduled
@@ -914,8 +912,6 @@ def run_configure_menu() -> None:
         f"Schedule     - {schedule_status}",
         "Quit",
     ]
-
-        console.print()
 
     choice = select_option(menu_options, title="What would you like to configure?")
 
