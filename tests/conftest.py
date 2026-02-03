@@ -66,9 +66,16 @@ def mock_repr_home(temp_dir: Path, monkeypatch) -> Path:
     # Reload modules to pick up new env var
     import repr.config
     import repr.keychain
+    import repr.storage
+    import repr.db
     import importlib
     importlib.reload(repr.keychain)
     importlib.reload(repr.config)
+    importlib.reload(repr.storage)
+    importlib.reload(repr.db)
+
+    # Reset the database singleton so it picks up the new path
+    repr.db.reset_db_instance()
 
     return repr_home
 
@@ -134,16 +141,26 @@ def authenticated_config(mock_config: dict, mock_repr_home: Path) -> dict:
 
 @pytest.fixture
 def mock_stories(mock_repr_home: Path) -> list[dict]:
-    """Create mock story files."""
+    """Create mock story files and database entries."""
     import repr.storage
+    import repr.db
     import importlib
+    from datetime import datetime, timezone
 
     # Reload storage module to pick up new REPR_HOME
     importlib.reload(repr.storage)
+    importlib.reload(repr.db)
+    repr.db.reset_db_instance()
 
     from repr.storage import STORIES_DIR, save_story
+    from repr.db import get_db
+    from repr.models import Story
 
     STORIES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Initialize database and register a test project
+    db = get_db()
+    project_id = db.register_project(mock_repr_home.parent / "test-repo", "test-repo")
 
     stories = []
     for i in range(3):
@@ -158,8 +175,23 @@ def mock_stories(mock_repr_home: Path) -> list[dict]:
             "needs_review": i == 0,  # First story needs review
             "confidence": "high" if i > 0 else "medium",
         }
+        # Save to files (for file-based storage operations)
         save_story(content, metadata, story_id)
         stories.append(metadata)
+
+        # Also save to database (for database-backed list_stories in cli.py)
+        story_obj = Story(
+            id=story_id,
+            created_at=datetime(2026, 1, 5, 10, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            project_id=project_id,
+            title=f"Test Story {i+1}",
+            problem="Test problem",
+            approach="Test approach",
+            commit_shas=[f"abc{i}123"],
+            category="feature",
+        )
+        db.save_story(story_obj, project_id)
 
     return stories
 
