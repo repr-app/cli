@@ -59,7 +59,7 @@ where = ["."]
 include = ["repr*"]
 
 [tool.setuptools.package-data]
-"repr.dashboard" = ["templates/*.html"]
+"repr.dashboard" = ["index.html", "static/**/*"]
 
 [tool.black]
 line-length = 100

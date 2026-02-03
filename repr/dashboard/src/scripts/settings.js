@@ -32,7 +32,7 @@ function switchMainView(view, pushState = true) {
   }
 
   // Hide all views
-  ['stories', 'settings', 'llm', 'privacy', 'repos', 'cron'].forEach(v => {
+  ['stories', 'settings', 'llm', 'privacy', 'repos', 'cron', 'detail', 'profile'].forEach(v => {
     const el = document.getElementById('view-' + v);
     if (el) el.style.display = 'none';
   });
