@@ -496,18 +496,28 @@ BYOK_PROVIDERS = {
     },
     "anthropic": {
         "name": "Anthropic",
-        "default_model": "claude-3-sonnet-20240229",
+        "default_model": "claude-sonnet-4-20250514",
         "base_url": "https://api.anthropic.com/v1",
+    },
+    "gemini": {
+        "name": "Google Gemini",
+        "default_model": "gemini-1.5-flash",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
     },
     "groq": {
         "name": "Groq",
-        "default_model": "llama-3.1-70b-versatile",
+        "default_model": "llama-3.3-70b-versatile",
         "base_url": "https://api.groq.com/openai/v1",
     },
     "together": {
         "name": "Together AI",
         "default_model": "meta-llama/Llama-3-70b-chat-hf",
         "base_url": "https://api.together.xyz/v1",
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "default_model": "anthropic/claude-3.5-sonnet",
+        "base_url": "https://openrouter.ai/api/v1",
     },
 }
 
