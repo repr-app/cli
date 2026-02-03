@@ -264,6 +264,8 @@ class ReprDatabase:
             ("diagram", "NULL"),
             # v8: author_name
             ("author_name", "'unknown'"),
+            # v9: author_email for Gravatar
+            ("author_email", "''"),
         ]
 
         for col, default in required_columns:
@@ -538,8 +540,8 @@ class ReprDatabase:
                     hook, what, value, insight, show, diagram, post_body,
                     public_post, public_show, internal_post, internal_show, internal_details,
                     file_changes, key_snippets, total_insertions, total_deletions,
-                    author_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    author_name, author_email
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     title=excluded.title,
@@ -571,7 +573,8 @@ class ReprDatabase:
                     key_snippets=excluded.key_snippets,
                     total_insertions=excluded.total_insertions,
                     total_deletions=excluded.total_deletions,
-                    author_name=excluded.author_name
+                    author_name=excluded.author_name,
+                    author_email=excluded.author_email
                 """,
                 (
                     story.id,
@@ -608,6 +611,7 @@ class ReprDatabase:
                     story.total_insertions,
                     story.total_deletions,
                     story.author_name,
+                    story.author_email,
                 )
             )
 
@@ -704,6 +708,7 @@ class ReprDatabase:
             total_insertions=int(_get("total_insertions", 0) or 0),
             total_deletions=int(_get("total_deletions", 0) or 0),
             author_name=_get("author_name", "unknown"),
+            author_email=_get("author_email", ""),
         )
 
     def get_story(self, story_id: str) -> Story | None:

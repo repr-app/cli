@@ -54,6 +54,7 @@ class TokenResponse:
     access_token: str
     user_id: str
     email: str
+    username: str | None = None
     litellm_api_key: str | None = None  # rf_* token for LLM proxy authentication
 
 
@@ -65,23 +66,24 @@ class AuthError(Exception):
 async def request_device_code() -> DeviceCodeResponse:
     """
     Request a new device code for authentication.
-    
+
     Returns:
         DeviceCodeResponse with user code to display
-    
+
     Raises:
         AuthError: If request fails
     """
-    async with httpx.AsyncClient() as client:
+    # Use sync client to avoid event loop cleanup issues
+    with httpx.Client() as client:
         try:
-            response = await client.post(
+            response = client.post(
                 _get_device_code_url(),
                 json={"client_id": "repr-cli"},
                 timeout=30,
             )
             response.raise_for_status()
             data = response.json()
-            
+
             return DeviceCodeResponse(
                 device_code=data["device_code"],
                 user_code=data["user_code"],
@@ -98,23 +100,24 @@ async def request_device_code() -> DeviceCodeResponse:
 async def poll_for_token(device_code: str, interval: int = POLL_INTERVAL) -> TokenResponse:
     """
     Poll for access token after user authorizes.
-    
+
     Args:
         device_code: The device code from initial request
         interval: Polling interval in seconds
-    
+
     Returns:
         TokenResponse with access token
-    
+
     Raises:
         AuthError: If polling fails or times out
     """
     start_time = time.time()
-    
-    async with httpx.AsyncClient() as client:
+
+    # Use sync client to avoid event loop cleanup issues
+    with httpx.Client() as client:
         while time.time() - start_time < MAX_POLL_TIME:
             try:
-                response = await client.post(
+                response = client.post(
                     _get_token_url(),
                     json={
                         "device_code": device_code,
@@ -124,20 +127,21 @@ async def poll_for_token(device_code: str, interval: int = POLL_INTERVAL) -> Tok
                     },
                     timeout=30,
                 )
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     return TokenResponse(
                         access_token=data["access_token"],
                         user_id=data["user_id"],
                         email=data["email"],
+                        username=data.get("username"),
                         litellm_api_key=data.get("litellm_api_key"),
                     )
-                
+
                 if response.status_code == 400:
                     data = response.json()
                     error = data.get("error", "unknown")
-                    
+
                     if error == "authorization_pending":
                         # User hasn't authorized yet, continue polling
                         await asyncio.sleep(interval)
@@ -153,23 +157,23 @@ async def poll_for_token(device_code: str, interval: int = POLL_INTERVAL) -> Tok
                         raise AuthError("Authorization denied by user.")
                     else:
                         raise AuthError(f"Authorization failed: {error}")
-                
+
                 response.raise_for_status()
-                
+
             except httpx.RequestError as e:
                 # Network error, retry
                 await asyncio.sleep(interval)
                 continue
-        
+
         raise AuthError("Authorization timed out. Please try again.")
 
 
 def save_token(token_response: TokenResponse) -> None:
     """
     Save authentication token securely.
-    
+
     Token is stored in OS keychain, config only stores a reference.
-    
+
     Args:
         token_response: Token response from successful auth
     """
@@ -177,6 +181,7 @@ def save_token(token_response: TokenResponse) -> None:
         access_token=token_response.access_token,
         user_id=token_response.user_id,
         email=token_response.email,
+        username=token_response.username,
         litellm_api_key=token_response.litellm_api_key,
     )
 
@@ -297,34 +302,35 @@ class AuthFlow:
     async def run(self) -> TokenResponse | None:
         """
         Run the full authentication flow.
-        
+
         Returns:
             TokenResponse if successful, None if cancelled
         """
         try:
             # Request device code
             device_code_response = await request_device_code()
-            
+
             if self.on_code_received:
                 self.on_code_received(device_code_response)
-            
+
             # Poll for token
             start_time = time.time()
             interval = device_code_response.interval
-            
-            async with httpx.AsyncClient() as client:
+
+            # Use sync client to avoid event loop cleanup issues
+            with httpx.Client() as client:
                 while not self._cancelled:
                     elapsed = time.time() - start_time
                     remaining = device_code_response.expires_in - elapsed
-                    
+
                     if remaining <= 0:
                         raise AuthError("Device code expired. Please try again.")
-                    
+
                     if self.on_progress:
                         self.on_progress(remaining)
-                    
+
                     try:
-                        response = await client.post(
+                        response = client.post(
                             _get_token_url(),
                             json={
                                 "device_code": device_code_response.device_code,
@@ -334,7 +340,7 @@ class AuthFlow:
                             },
                             timeout=30,
                         )
-                        
+
                         if response.status_code == 200:
                             data = response.json()
                             user_data = data.get("user", {})
@@ -342,19 +348,20 @@ class AuthFlow:
                                 access_token=data["access_token"],
                                 user_id=user_data.get("id", ""),
                                 email=user_data.get("email", ""),
+                                username=user_data.get("username"),
                                 litellm_api_key=data.get("litellm_api_key"),
                             )
                             save_token(token)
-                            
+
                             if self.on_success:
                                 self.on_success(token)
-                            
+
                             return token
-                        
+
                         if response.status_code == 400:
                             data = response.json()
                             error = data.get("error", "unknown")
-                            
+
                             if error == "authorization_pending":
                                 await asyncio.sleep(interval)
                                 continue
@@ -366,15 +373,15 @@ class AuthFlow:
                                 raise AuthError("Device code expired. Please try again.")
                             elif error == "access_denied":
                                 raise AuthError("Authorization denied by user.")
-                        
+
                     except httpx.RequestError:
                         await asyncio.sleep(interval)
                         continue
-                    
+
                     await asyncio.sleep(interval)
-            
+
             return None  # Cancelled
-            
+
         except AuthError as e:
             if self.on_error:
                 self.on_error(e)

@@ -155,6 +155,7 @@ def _deserialize_commit(data: dict | None) -> CommitData | None:
         files=data["files"],
         insertions=data.get("insertions", 0),
         deletions=data.get("deletions", 0),
+        author_email=data.get("author_email", ""),
     )
 
 
@@ -313,6 +314,7 @@ def extract_commits_from_git(
             files=files,
             insertions=commit.stats.total.get("insertions", 0),
             deletions=commit.stats.total.get("deletions", 0),
+            author_email=commit.author.email or "",
         ))
         
         commit_count += 1
@@ -468,26 +470,25 @@ async def init_timeline_with_sessions(
     session_contexts: dict[str, SessionContext] = {}
     
     if sessions:
-        extractor = SessionExtractor(api_key=api_key, base_url=base_url, model=model)
-        
-        # Extract in batches with progress
-        total_sessions = len(sessions)
-        for i, session in enumerate(sessions):
-            if progress_callback:
-                progress_callback("extracting", i + 1, total_sessions)
-            
-            try:
-                # Find linked commits for this session
-                linked_commits = [
-                    m.commit_sha for m in matches
-                    if m.session_id == session.id
-                ]
+        async with SessionExtractor(api_key=api_key, base_url=base_url, model=model) as extractor:
+            # Extract in batches with progress
+            total_sessions = len(sessions)
+            for i, session in enumerate(sessions):
+                if progress_callback:
+                    progress_callback("extracting", i + 1, total_sessions)
                 
-                context = await extractor.extract_context(session, linked_commits=linked_commits)
-                session_contexts[session.id] = context
-            except Exception as e:
-                # Log but continue
-                print(f"Warning: Failed to extract context from session {session.id}: {e}")
+                try:
+                    # Find linked commits for this session
+                    linked_commits = [
+                        m.commit_sha for m in matches
+                        if m.session_id == session.id
+                    ]
+                    
+                    context = await extractor.extract_context(session, linked_commits=linked_commits)
+                    session_contexts[session.id] = context
+                except Exception as e:
+                    # Log but continue
+                    print(f"Warning: Failed to extract context from session {session.id}: {e}")
     
     # Create timeline entries
     # First, add all commits
@@ -632,3 +633,78 @@ def query_timeline(
         results.append(entry)
     
     return results
+
+
+async def get_session_contexts_for_commits(
+    project_path: Path,
+    commits: list[CommitData],
+    days: int = 30,
+    session_sources: list[str] | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str = "openai/gpt-4.1-mini",
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> list[SessionContext]:
+    """
+    Load and extract context from sessions linked to a list of commits.
+    
+    Args:
+        project_path: Path to the project
+        commits: List of commits to match against
+        days: How far back to look for sessions
+        session_sources: Sources to check (None = auto-detect)
+        api_key: API key for extraction
+        base_url: Base URL for extraction
+        model: Model to use for extraction
+        progress_callback: Optional progress callback
+        
+    Returns:
+        List of extracted SessionContext objects
+    """
+    from .loaders import load_sessions_for_project, detect_session_source
+    from .session_extractor import SessionExtractor
+    
+    # 1. Detect and load sessions
+    if session_sources is None:
+        session_sources = detect_session_source(project_path)
+    
+    if not session_sources:
+        return []
+        
+    sessions = load_sessions_for_project(
+        project_path,
+        sources=session_sources,
+        days_back=days,
+    )
+    
+    if not sessions:
+        return []
+        
+    if progress_callback:
+        progress_callback("sessions_loaded", len(sessions), len(sessions))
+        
+    # 2. Match commits to sessions
+    matches = match_commits_to_sessions(commits, sessions)
+    
+    if not matches:
+        return []
+        
+    # 3. Extract context from matched sessions
+    matched_session_ids = {m.session_id for m in matches}
+    matched_sessions = [s for s in sessions if s.id in matched_session_ids]
+    
+    session_contexts = []
+    async with SessionExtractor(api_key=api_key, base_url=base_url, model=model) as extractor:
+        total_to_extract = len(matched_sessions)
+        for i, session in enumerate(matched_sessions):
+            if progress_callback:
+                progress_callback("extracting", i + 1, total_to_extract)
+                
+            try:
+                linked_commits = [m.commit_sha for m in matches if m.session_id == session.id]
+                context = await extractor.extract_context(session, linked_commits=linked_commits)
+                session_contexts.append(context)
+            except Exception:
+                continue
+            
+    return session_contexts

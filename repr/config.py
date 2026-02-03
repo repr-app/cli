@@ -286,29 +286,31 @@ def set_auth(
     access_token: str,
     user_id: str,
     email: str,
+    username: str | None = None,
     litellm_api_key: str | None = None,
 ) -> None:
     """Store authentication info securely."""
     from .keychain import store_secret
-    
+
     config = load_config()
-    
+
     # Store token in keychain
     keychain_ref = f"auth_token_{user_id[:8]}"
     store_secret(keychain_ref, access_token)
-    
+
     config["auth"] = {
         "token_keychain_ref": keychain_ref,
         "user_id": user_id,
         "email": email,
+        "username": username,
         "authenticated_at": datetime.now().isoformat(),
     }
-    
+
     if litellm_api_key:
         litellm_ref = f"litellm_key_{user_id[:8]}"
         store_secret(litellm_ref, litellm_api_key)
         config["auth"]["litellm_keychain_ref"] = litellm_ref
-    
+
     save_config(config)
 
 
@@ -494,18 +496,28 @@ BYOK_PROVIDERS = {
     },
     "anthropic": {
         "name": "Anthropic",
-        "default_model": "claude-3-sonnet-20240229",
+        "default_model": "claude-sonnet-4-20250514",
         "base_url": "https://api.anthropic.com/v1",
+    },
+    "gemini": {
+        "name": "Google Gemini",
+        "default_model": "gemini-1.5-flash",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
     },
     "groq": {
         "name": "Groq",
-        "default_model": "llama-3.1-70b-versatile",
+        "default_model": "llama-3.3-70b-versatile",
         "base_url": "https://api.groq.com/openai/v1",
     },
     "together": {
         "name": "Together AI",
         "default_model": "meta-llama/Llama-3-70b-chat-hf",
         "base_url": "https://api.together.xyz/v1",
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "default_model": "anthropic/claude-3.5-sonnet",
+        "base_url": "https://openrouter.ai/api/v1",
     },
 }
 

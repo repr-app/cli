@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable
 
-from openai import AsyncOpenAI
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from .config import get_or_generate_username
@@ -202,9 +202,20 @@ Your job:
 2. Group related commits into meaningful stories (features, fixes, refactors)
 3. For each group, extract the WHY/WHAT/HOW context
 
-IMPORTANT: Prefer grouping commits over creating many small stories. A story should represent a complete unit of value or logical change.
-- If multiple commits relate to the same feature, GROUP THEM.
-- If a commit is a small fix for a previous commit in the batch, GROUP THEM.
+IMPORTANT: A story should represent ONE coherent unit of value. Apply these rules:
+
+GROUPING (consolidate):
+- Multiple commits for the same feature → GROUP into one story
+- A commit + its follow-up fix → GROUP together
+
+SPLITTING (unpack):
+- A single commit with MULTIPLE UNRELATED changes → SPLIT into separate stories
+- Look for signs of a "packed" commit:
+  * Commit message lists multiple things ("Add X, fix Y, update Z")
+  * Files changed span unrelated areas (e.g., auth + UI + docs)
+  * Insertions/deletions suggest multiple distinct changes
+- When splitting, the same commit SHA can appear in multiple stories
+- Each split story should have its own distinct title, problem, and approach
 
 Output JSON with a "stories" array. EVERY field must be filled in - do not leave any empty:
 
@@ -246,7 +257,8 @@ Optional field:
   ```
 
 Rules:
-- Every commit must appear in exactly one story
+- Every commit must appear in at least one story
+- A packed commit may appear in MULTIPLE stories if it contains distinct changes
 - NEVER leave problem, approach, or implementation_details empty
 - Be specific: "Added `UserAuth` class with JWT validation" not "Added auth"
 - Use plain engineering language in titles and summaries
@@ -259,7 +271,8 @@ STORY_SYNTHESIS_USER = """Analyze these commits and group them into stories with
 {commits_text}
 
 Output valid JSON with a "stories" array. Fill in ALL fields with specific details.
-Example format:
+
+Example 1 - Normal story:
 {{
   "stories": [
     {{
@@ -269,13 +282,40 @@ Example format:
       "approach": "Implemented JWT-based auth with refresh tokens",
       "implementation_details": [
         "Added UserAuth class in auth/user_auth.py with login() and verify_token() methods",
-        "Created JWT middleware in middleware/jwt.py using PyJWT library",
-        "Updated User model with password_hash field and bcrypt hashing"
+        "Created JWT middleware in middleware/jwt.py using PyJWT library"
       ],
       "decisions": ["Chose JWT over sessions for stateless scaling"],
       "category": "feature",
-      "technologies": ["JWT", "bcrypt", "FastAPI", "SQLAlchemy", "REST API"],
-      "diagram": "[Client] --> [Auth API] --> [JWT Service]\\n                |\\n                v\\n            [User DB]"
+      "technologies": ["JWT", "bcrypt", "FastAPI"],
+      "diagram": null
+    }}
+  ]
+}}
+
+Example 2 - Splitting a packed commit (same SHA in multiple stories):
+If commit "def5678" has message "Add auth, fix navbar, update docs" and touches unrelated files:
+{{
+  "stories": [
+    {{
+      "commit_shas": ["def5678"],
+      "title": "Add user authentication",
+      "problem": "...",
+      "approach": "...",
+      ...
+    }},
+    {{
+      "commit_shas": ["def5678"],
+      "title": "Fix navbar alignment",
+      "problem": "...",
+      "approach": "...",
+      ...
+    }},
+    {{
+      "commit_shas": ["def5678"],
+      "title": "Update API documentation",
+      "problem": "...",
+      "approach": "...",
+      ...
     }}
   ]
 }}
@@ -486,7 +526,7 @@ class StorySynthesizer:
         self.base_url = base_url
         self._model_override = model  # Explicit override
         self._model: str | None = None  # Resolved model (lazy)
-        self._client: AsyncOpenAI | None = None
+        self._client: OpenAI | None = None
 
     @property
     def model(self) -> str:
@@ -530,7 +570,7 @@ class StorySynthesizer:
 
         return "gpt-4o-mini"  # Final fallback
 
-    def _get_client(self) -> AsyncOpenAI:
+    def _get_client(self) -> OpenAI:
         """Get or create OpenAI client."""
         if self._client is None:
             import os
@@ -570,7 +610,7 @@ class StorySynthesizer:
             if not api_key:
                 raise ValueError("No API key found. Configure via 'repr llm byok openai <key>'")
 
-            self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            self._client = OpenAI(api_key=api_key, base_url=base_url)
 
         return self._client
     
@@ -604,12 +644,12 @@ class StorySynthesizer:
         if not commits:
             return [], ContentIndex()
 
-        # Get LLM analysis
+        # Get LLM analysis (using sync client to avoid event loop cleanup issues)
         client = self._get_client()
         commits_text = self._format_commits_for_prompt(commits)
 
         try:
-            response = await client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.model.split("/")[-1] if "/" in self.model else self.model,
                 messages=[
                     {"role": "system", "content": STORY_SYNTHESIS_SYSTEM},
@@ -657,15 +697,6 @@ class StorySynthesizer:
                 )
                 for c in commits
             ])
-        finally:
-            # Close the AsyncOpenAI client to avoid event loop closed errors
-            try:
-                await client.close()
-            except RuntimeError:
-                # Event loop already closed, ignore
-                pass
-            # Clear cached client so it can be recreated on next use
-            self._client = None
         
         # Build commit lookup - support both full and prefix matching
         commit_map = {c.sha: c for c in commits}
@@ -722,10 +753,11 @@ class StorySynthesizer:
             file_changes, total_ins, total_del = extract_file_changes_from_commits(matched_shas)
             key_snippets = extract_key_snippets_from_commits(matched_shas, max_snippets=3)
 
-            # Deterministic ID based on sorted commit SHAs
-            # This prevents duplicates if the same stories are generated again
+            # Deterministic ID based on sorted commit SHAs + title
+            # Include title to differentiate stories split from the same packed commit
             sorted_shas = sorted(matched_shas)
-            story_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"repr-story-{'-'.join(sorted_shas)}"))
+            id_input = f"repr-story-{'-'.join(sorted_shas)}-{boundary.title}"
+            story_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, id_input))
 
             # Get author: profile username > GPG-derived mnemonic > git author > unknown
             if identity := get_or_generate_username():
@@ -735,11 +767,15 @@ class StorySynthesizer:
             else:
                 author_name = "unknown"
 
+            # Get email from first commit for Gravatar
+            author_email = story_commits[0].author_email if story_commits else ""
+
             story = Story(
                 id=story_id,
                 created_at=now,
                 updated_at=now,
                 author_name=author_name,
+                author_email=author_email,
                 commit_shas=matched_shas,  # Use full matched SHAs
                 session_ids=linked_sessions,
                 title=boundary.title,
@@ -1027,7 +1063,8 @@ async def transform_story_for_feed(
         response_model = InternalStory
 
     try:
-        response = await client.chat.completions.create(
+        # Use sync client to avoid event loop cleanup issues
+        response = client.chat.completions.create(
             model=model_name.split("/")[-1] if "/" in model_name else model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -1060,15 +1097,6 @@ async def transform_story_for_feed(
     except Exception as e:
         # Fallback: construct structured content from available data
         return _build_fallback_codex(story, mode)
-    finally:
-        # Close the AsyncOpenAI client to avoid event loop closed errors
-        try:
-            await client.close()
-        except RuntimeError:
-            # Event loop already closed, ignore
-            pass
-        # Clear cached client so it can be recreated on next use
-        synthesizer._client = None
 
 
 def _build_post_body_public(hook: str, what: str, value: str, insight: str) -> str:

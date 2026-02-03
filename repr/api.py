@@ -1,5 +1,8 @@
 """
 REST API client for repr.dev endpoints.
+
+Uses synchronous httpx.Client to avoid asyncio event loop cleanup issues
+when called from sync contexts via asyncio.run().
 """
 
 import hashlib
@@ -56,24 +59,25 @@ def compute_content_hash(content: str) -> str:
 async def push_profile(content: str, profile_name: str, analyzed_repos: list[dict[str, Any] | str] | None = None) -> dict[str, Any]:
     """
     Push a profile to repr.dev.
-    
+
     Args:
         content: Markdown content of the profile
         profile_name: Name/identifier of the profile
         analyzed_repos: Optional list of repository metadata (dicts) or names (strings for backward compat)
-    
+
     Returns:
         Response data with profile URL
-    
+
     Raises:
         APIError: If upload fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    # Use sync client to avoid event loop cleanup issues
+    with httpx.Client() as client:
         try:
             # Compute content hash
             content_hash = compute_content_hash(content)
-            
+
             payload = {
                 "content": content,
                 "name": profile_name,
@@ -81,8 +85,8 @@ async def push_profile(content: str, profile_name: str, analyzed_repos: list[dic
             }
             if analyzed_repos is not None:
                 payload["analyzed_repos"] = analyzed_repos
-            
-            response = await client.post(
+
+            response = client.post(
                 _get_profile_url(),
                 headers=_get_headers(),
                 json=payload,
@@ -90,7 +94,7 @@ async def push_profile(content: str, profile_name: str, analyzed_repos: list[dic
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -105,28 +109,28 @@ async def push_profile(content: str, profile_name: str, analyzed_repos: list[dic
 async def get_user_profile() -> dict[str, Any] | None:
     """
     Get the user's current profile from the server.
-    
+
     Returns:
         Profile data or None if not found
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(
+            response = client.get(
                 _get_profile_url(),
                 headers=_get_headers(),
                 timeout=30,
             )
-            
+
             if response.status_code == 404:
                 return None
-            
+
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -138,24 +142,24 @@ async def get_user_profile() -> dict[str, Any] | None:
 async def get_user_info() -> dict[str, Any]:
     """
     Get current user information.
-    
+
     Returns:
         User info dict
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(
+            response = client.get(
                 _get_user_url(),
                 headers=_get_headers(),
                 timeout=30,
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -167,24 +171,24 @@ async def get_user_info() -> dict[str, Any]:
 async def delete_profile() -> bool:
     """
     Delete the user's profile from the server.
-    
+
     Returns:
         True if deleted successfully
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.delete(
+            response = client.delete(
                 _get_profile_url(),
                 headers=_get_headers(),
                 timeout=30,
             )
             response.raise_for_status()
             return True
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -202,31 +206,31 @@ async def push_repo_profile(
 ) -> dict[str, Any]:
     """
     Push a single repository profile to repr.dev.
-    
+
     Args:
         content: Markdown content of the profile
         repo_name: Name of the repository
         repo_metadata: Repository metadata (commit_count, languages, etc.)
-    
+
     Returns:
         Response data with profile URL
-    
+
     Raises:
         APIError: If upload fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
             content_hash = compute_content_hash(content)
-            
+
             payload = {
                 "repo_name": repo_name,
                 "content": content,
                 "content_hash": content_hash,
                 **repo_metadata,
             }
-            
-            response = await client.post(
+
+            response = client.post(
                 _get_repo_profile_url(),
                 headers=_get_headers(),
                 json=payload,
@@ -234,7 +238,7 @@ async def push_repo_profile(
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -282,22 +286,22 @@ async def get_stories(
 ) -> dict[str, Any]:
     """
     Get commit stories from repr.dev.
-    
+
     Args:
         repo_name: Filter by repository name
         since: Filter by date (ISO format or human-readable like "1 week ago")
         technologies: Comma-separated list of technologies to filter by
         limit: Maximum number of stories to return
         offset: Pagination offset
-    
+
     Returns:
         Dict with 'stories' list and 'total' count
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
             params: dict[str, Any] = {
                 "limit": limit,
@@ -309,8 +313,8 @@ async def get_stories(
                 params["since"] = since
             if technologies:
                 params["technologies"] = technologies
-            
-            response = await client.get(
+
+            response = client.get(
                 _get_stories_url(),
                 headers=_get_headers(),
                 params=params,
@@ -318,7 +322,7 @@ async def get_stories(
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -330,20 +334,20 @@ async def get_stories(
 async def push_story(story_data: dict[str, Any]) -> dict[str, Any]:
     """
     Push a commit story to repr.dev.
-    
+
     Args:
         story_data: Story data including summary, technologies, repo info, etc.
-    
+
     Returns:
         Created/updated story data
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.post(
+            response = client.post(
                 _get_stories_url(),
                 headers=_get_headers(),
                 json=story_data,
@@ -351,7 +355,7 @@ async def push_story(story_data: dict[str, Any]) -> dict[str, Any]:
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
@@ -366,15 +370,15 @@ BATCH_SIZE = 200  # Maximum stories per batch request
 async def push_stories_batch(stories: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Push multiple stories to repr.dev in batches.
-    
+
     Stories are automatically chunked into batches of BATCH_SIZE (200).
-    
+
     Args:
         stories: List of story data dicts, each including summary, content, repo info, etc.
-    
+
     Returns:
         Dict with 'pushed' count, 'failed' count, and 'results' list
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
@@ -382,14 +386,14 @@ async def push_stories_batch(stories: list[dict[str, Any]]) -> dict[str, Any]:
     all_results: list[dict[str, Any]] = []
     total_pushed = 0
     total_failed = 0
-    
+
     # Process in chunks of BATCH_SIZE
     for i in range(0, len(stories), BATCH_SIZE):
         chunk = stories[i:i + BATCH_SIZE]
-        
-        async with httpx.AsyncClient() as client:
+
+        with httpx.Client() as client:
             try:
-                response = await client.post(
+                response = client.post(
                     f"{_get_stories_url()}/batch",
                     headers=_get_headers(),
                     json={"stories": chunk},
@@ -397,18 +401,18 @@ async def push_stories_batch(stories: list[dict[str, Any]]) -> dict[str, Any]:
                 )
                 response.raise_for_status()
                 result = response.json()
-                
+
                 total_pushed += result.get("pushed", 0)
                 total_failed += result.get("failed", 0)
                 all_results.extend(result.get("results", []))
-                
+
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 401:
                     raise AuthError("Session expired. Please run 'repr login' again.")
                 raise APIError(f"Failed to push stories batch: {e.response.status_code}")
             except httpx.RequestError as e:
                 raise APIError(f"Network error: {str(e)}")
-    
+
     return {
         "pushed": total_pushed,
         "failed": total_failed,
@@ -427,9 +431,9 @@ async def get_public_profile_settings() -> dict[str, Any]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(
+            response = client.get(
                 _get_public_settings_url(),
                 headers=_get_headers(),
                 timeout=30,
@@ -460,9 +464,9 @@ async def set_story_visibility(story_id: str, visibility: str) -> dict[str, Any]
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.patch(
+            response = client.patch(
                 f"{_get_stories_url()}/{story_id}/visibility",
                 headers=_get_headers(),
                 json={"visibility": visibility},
@@ -490,9 +494,9 @@ async def get_friends() -> list[dict[str, Any]]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(
+            response = client.get(
                 f"{get_api_base()}/friends",
                 headers=_get_headers(),
                 timeout=30,
@@ -522,9 +526,9 @@ async def send_friend_request(username: str) -> dict[str, Any]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.post(
+            response = client.post(
                 f"{get_api_base()}/friends/request",
                 headers=_get_headers(),
                 json={"to_username": username},
@@ -552,9 +556,9 @@ async def get_friend_requests() -> list[dict[str, Any]]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(
+            response = client.get(
                 f"{get_api_base()}/friends/requests",
                 headers=_get_headers(),
                 timeout=30,
@@ -584,9 +588,9 @@ async def approve_friend_request(request_id: str) -> dict[str, Any]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.post(
+            response = client.post(
                 f"{get_api_base()}/friends/approve/{request_id}",
                 headers=_get_headers(),
                 timeout=30,
@@ -616,9 +620,9 @@ async def reject_friend_request(request_id: str) -> dict[str, Any]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.post(
+            response = client.post(
                 f"{get_api_base()}/friends/reject/{request_id}",
                 headers=_get_headers(),
                 timeout=30,
@@ -648,9 +652,9 @@ async def get_friend_stories(username: str) -> list[dict[str, Any]]:
         APIError: If request fails
         AuthError: If not authenticated
     """
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(
+            response = client.get(
                 f"{get_api_base()}/friends/{username}/stories",
                 headers=_get_headers(),
                 timeout=30,

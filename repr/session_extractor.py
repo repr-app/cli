@@ -199,7 +199,7 @@ def format_session_for_extraction(
 
 class SessionExtractor:
     """Extract structured context from sessions using LLM."""
-    
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -208,7 +208,7 @@ class SessionExtractor:
     ):
         """
         Initialize extractor.
-        
+
         Args:
             api_key: API key for LLM provider
             base_url: Base URL for API (for local LLMs)
@@ -218,10 +218,24 @@ class SessionExtractor:
         self.base_url = base_url
         self.model = model
         self._client = None
-    
+
+    async def close(self):
+        """Close the underlying OpenAI client (no-op for sync client)."""
+        # Sync client doesn't need explicit closing
+        self._client = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
     def _get_client(self):
         """Get or create OpenAI client.
-        
+
+        Uses sync client to avoid event loop cleanup issues when called
+        from sync contexts via asyncio.run().
+
         Tries multiple sources for API key in order:
         1. Explicit api_key passed to constructor
         2. BYOK OpenAI config from repr
@@ -231,21 +245,21 @@ class SessionExtractor:
         """
         if self._client is None:
             import os
-            from openai import AsyncOpenAI
-            
+            from openai import OpenAI
+
             api_key = self.api_key
             base_url = self.base_url
-            
+
             if not api_key:
                 try:
                     # Try BYOK OpenAI config first
                     from .config import get_byok_config, get_llm_config
-                    
+
                     byok = get_byok_config("openai")
                     if byok and byok.get("api_key"):
                         api_key = byok["api_key"]
                         base_url = base_url or byok.get("base_url")
-                    
+
                     # Try local LLM config
                     if not api_key:
                         llm_config = get_llm_config()
@@ -254,11 +268,11 @@ class SessionExtractor:
                             base_url = base_url or llm_config.get("local_api_url")
                 except Exception:
                     pass
-                
+
                 # Try environment variable
                 if not api_key:
                     api_key = os.getenv("OPENAI_API_KEY")
-                
+
                 # Try LiteLLM config (cloud mode)
                 if not api_key:
                     try:
@@ -269,7 +283,7 @@ class SessionExtractor:
                             base_url = base_url or litellm_url
                     except Exception:
                         pass
-            
+
             if not api_key:
                 raise ValueError(
                     "No API key found. Configure one via:\n"
@@ -277,8 +291,8 @@ class SessionExtractor:
                     "  - OPENAI_API_KEY environment variable\n"
                     "  - repr login (for cloud mode)"
                 )
-            
-            self._client = AsyncOpenAI(
+
+            self._client = OpenAI(
                 api_key=api_key,
                 base_url=base_url,
             )
@@ -291,22 +305,22 @@ class SessionExtractor:
     ) -> SessionContext:
         """
         Extract context from a session.
-        
+
         Args:
             session: Session to extract from
             linked_commits: Optional list of linked commit SHAs
-        
+
         Returns:
             Extracted SessionContext
         """
         # Format session for LLM
         transcript = format_session_for_extraction(session)
-        
-        # Call LLM
+
+        # Call LLM (using sync client to avoid event loop cleanup issues)
         client = self._get_client()
-        
+
         try:
-            response = await client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.model.split("/")[-1] if "/" in self.model else self.model,
                 messages=[
                     {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
@@ -317,11 +331,11 @@ class SessionExtractor:
                 response_format={"type": "json_object"},
                 temperature=0.3,
             )
-            
+
             # Parse response
             content = response.choices[0].message.content
             extracted = ExtractedContext.model_validate_json(content)
-            
+
         except Exception as e:
             # Fallback: create context from session metadata + first user message
             first_user_msg = ""
@@ -329,19 +343,19 @@ class SessionExtractor:
                 if msg.role == MessageRole.USER and msg.text_content:
                     first_user_msg = msg.text_content[:500]
                     break
-            
+
             # Try to infer problem from first message
             problem = first_user_msg if first_user_msg else f"AI coding session in {session.cwd or 'project directory'}"
-            
+
             # Determine if this is an API error vs other error
             error_str = str(e)
             is_api_error = any(x in error_str.lower() for x in ["401", "403", "api key", "unauthorized", "authentication"])
-            
+
             if is_api_error:
                 lesson = "Extraction skipped - configure API key with 'repr llm byok openai <key>'"
             else:
                 lesson = f"Extraction failed: {error_str[:80]}"
-            
+
             extracted = ExtractedContext(
                 problem=problem[:500],
                 approach="Not extracted - see lessons",
@@ -351,7 +365,7 @@ class SessionExtractor:
                 outcome=f"Session: {session.message_count} messages, {session.duration_seconds or 0:.0f}s",
                 lessons=[lesson],
             )
-        
+
         # Build SessionContext
         return SessionContext(
             session_id=session.id,
