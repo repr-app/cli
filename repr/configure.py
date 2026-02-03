@@ -297,8 +297,31 @@ def list_openai_models(api_key: str, base_url: str = "https://api.openai.com/v1"
 
 
 def list_anthropic_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Anthropic models."""
-    # Anthropic doesn't have a models list endpoint, return known models
+    """List available Anthropic models from API."""
+    try:
+        resp = httpx.get(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                display_name = m.get("display_name", model_id)
+                models.append({
+                    "id": model_id,
+                    "name": display_name,
+                })
+            # Sort by name, newest first
+            return sorted(models, key=lambda x: x["name"], reverse=True)
+    except Exception:
+        pass
+    # Fallback to known models if API fails
     return [
         {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
         {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
@@ -424,7 +447,6 @@ def select_model(models: list[dict[str, Any]], default: str | None = None) -> st
             display.append(name)
 
     console.print()
-    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select, / to search[/]")
 
     selected = select_with_filter(models, title="Select model:", default_id=default)
     if selected:
@@ -497,8 +519,7 @@ def wizard_llm() -> bool:
         else:
             menu_items.append(f"  {name} - {desc}")
 
-    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select[/]")
-    console.print()
+        console.print()
 
     # Show menu
     idx = select_option(menu_items, title="Select LLM provider:")
@@ -756,8 +777,7 @@ def wizard_schedule() -> bool:
         "Manual only - Run `repr generate` yourself",
     ]
 
-    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select[/]")
-    console.print()
+        console.print()
 
     choice = select_option(schedule_options, title="How should repr generate stories?")
     if choice is None:
@@ -895,8 +915,7 @@ def run_configure_menu() -> None:
         "Quit",
     ]
 
-    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select[/]")
-    console.print()
+        console.print()
 
     choice = select_option(menu_options, title="What would you like to configure?")
 
