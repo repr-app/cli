@@ -157,7 +157,7 @@ API_PROVIDERS = {
         "base_url": "https://api.openai.com/v1",
         "models_endpoint": "/models",
         "api_style": "openai",
-        "auth_methods": ["api_key"],  # Could add "oauth" for codex later
+        "auth_methods": ["api_key"],
         "default_model": "gpt-4o-mini",
         "env_var": "OPENAI_API_KEY",
     },
@@ -167,7 +167,7 @@ API_PROVIDERS = {
         "base_url": "https://api.anthropic.com/v1",
         "models_endpoint": "/models",
         "api_style": "anthropic",
-        "auth_methods": ["api_key", "claude_setup"],
+        "auth_methods": ["api_key"],
         "default_model": "claude-sonnet-4-20250514",
         "env_var": "ANTHROPIC_API_KEY",
     },
@@ -297,31 +297,7 @@ def list_openai_models(api_key: str, base_url: str = "https://api.openai.com/v1"
 
 
 def list_anthropic_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Anthropic models from API."""
-    try:
-        resp = httpx.get(
-            "https://api.anthropic.com/v1/models",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            models = []
-            for m in data.get("data", []):
-                model_id = m.get("id", "")
-                display_name = m.get("display_name", model_id)
-                models.append({
-                    "id": model_id,
-                    "name": display_name,
-                })
-            # Sort by name, newest first
-            return sorted(models, key=lambda x: x["name"], reverse=True)
-    except Exception:
-        pass
-    # Fallback to known models if API fails
+    """List available Anthropic models."""
     return [
         {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
         {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
@@ -614,37 +590,16 @@ def _configure_api_llm(selected: dict) -> bool:
     console.print(f"Configuring {info['name']}...")
     console.print()
 
-    # Handle auth methods
-    auth_methods = info.get("auth_methods", ["api_key"])
-
+    # Check environment variable first
+    import os
     api_key = None
+    env_key = os.getenv(info.get("env_var", ""))
+    if env_key:
+        if confirm(f"Use {info['env_var']} from environment?"):
+            api_key = env_key
 
-    if "claude_setup" in auth_methods and provider == "anthropic":
-        auth_options = [
-            "API Key - Enter your Anthropic API key",
-            "Claude Setup Token - Run 'claude setup-token'",
-        ]
-        auth_idx = select_option(auth_options, title="Authentication method:")
-
-        if auth_idx == 1:
-            console.print()
-            console.print("To get your setup token:")
-            console.print("  1. Run 'claude setup-token' in terminal")
-            console.print("  2. Follow the browser prompt to authorize")
-            console.print()
-            api_key = Prompt.ask("Setup token", password=True)
-        else:
-            api_key = Prompt.ask("API Key", password=True)
-    else:
-        # Check environment variable first
-        import os
-        env_key = os.getenv(info.get("env_var", ""))
-        if env_key:
-            if confirm(f"Use {info['env_var']} from environment?"):
-                api_key = env_key
-
-        if not api_key:
-            api_key = Prompt.ask("API Key", password=True)
+    if not api_key:
+        api_key = Prompt.ask("API Key", password=True)
 
     if not api_key:
         print_error("API key required")
