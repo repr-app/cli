@@ -583,9 +583,8 @@ def _configure_api_llm(selected: dict) -> bool:
         if auth_choice == "2":
             console.print()
             console.print("To get your setup token:")
-            console.print("  1. Go to https://claude.ai/account")
-            console.print("  2. Run 'claude setup' in terminal")
-            console.print("  3. Copy the token from the browser")
+            console.print("  1. Run 'claude setup-token' in terminal")
+            console.print("  2. Follow the browser prompt to authorize")
             console.print()
             api_key = Prompt.ask("Setup token", password=True)
         else:
