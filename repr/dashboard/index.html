@@ -207,6 +207,31 @@ body {
   margin-left: 0;
 }
 
+/* Profile View Overlay */
+#view-profile {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 200;
+  background: var(--bg);
+  display: none;
+}
+
+#view-profile.open {
+  display: flex;
+}
+
+#view-profile .sidebar {
+  position: relative;
+  height: 100%;
+}
+
+#view-profile .main-content {
+  margin-left: 0;
+}
+
 .mobile-nav {
   display: none;
 }
@@ -1286,6 +1311,13 @@ body.is-windows .search-shortcut-mod::after {
   border-top: none;
 }
 
+/* Standalone settings content (no tabs above) */
+.settings-container>.settings-content:first-child {
+  margin-top: 24px;
+  border-radius: 8px;
+  border-top: 1px solid var(--border);
+}
+
 .settings-section {
   margin-bottom: 32px;
 }
@@ -1932,6 +1964,250 @@ body.is-windows .search-shortcut-mod::after {
   pointer-events: none;
   font-size: 14px;
 }
+
+/* Profile View - New Design */
+.profile-container {
+  max-width: 600px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+
+.profile-header-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid transparent;
+  padding: 0 16px;
+  height: 53px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+[data-theme="dark"] .profile-header-nav {
+  background: rgba(13, 17, 23, 0.85);
+}
+
+.back-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s;
+  color: var(--text-primary);
+  margin-left: -8px;
+}
+
+.back-button:hover {
+  background: var(--surface-hover);
+}
+
+.profile-nav-title {
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--text-primary);
+}
+
+.profile-cover {
+  height: 200px;
+  width: 100%;
+  background: linear-gradient(135deg, #FF9A9E 0%, #FECFEF 99%, #FECFEF 100%);
+  background-size: cover;
+  background-position: center;
+}
+
+[data-theme="dark"] .profile-cover {
+  background: linear-gradient(135deg, #4b2c34 0%, #3e1f2b 100%);
+}
+
+.profile-content {
+  position: relative;
+}
+
+.profile-top-section {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.profile-avatar-wrapper {
+  margin-top: -15%;
+  padding: 4px;
+  background: var(--surface);
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.profile-avatar-large {
+  width: 134px;
+  height: 134px;
+  border-radius: 50%;
+  background: var(--green);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 56px;
+  color: white;
+  border: 4px solid var(--surface);
+  position: relative;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 6px 16px;
+  font-size: 14px;
+  border-radius: 20px;
+  border-width: 1px;
+}
+
+.profile-details {
+  padding: 0 16px 16px;
+}
+
+.profile-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.profile-name-row h1 {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.verified-badge-large {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  width: 20px;
+  height: 20px;
+}
+
+.profile-handle {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.profile-bio {
+  font-size: 15px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+}
+
+.profile-metadata-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.profile-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-card);
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.profile-pill:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.pill-icon {
+  font-size: 14px;
+}
+
+.profile-pill-count {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  background: var(--surface-card);
+  padding: 4px 12px;
+  border-radius: 16px;
+}
+
+.profile-stats-row {
+  display: flex;
+  gap: 20px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.stat-item strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.profile-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-top: 16px;
+}
+
+.profile-tab {
+  flex: 1;
+  text-align: center;
+  padding: 16px 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s;
+}
+
+.profile-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.profile-tab.active {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.profile-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 2px;
+}
   </style>
   
 </head>
@@ -2451,43 +2727,81 @@ body.is-windows .search-shortcut-mod::after {
 
   <!-- Profile View (overlay) -->
   <div class="dashboard" id="view-profile">
-    <aside class="sidebar" style="background: var(--surface);">
-      <div class="sidebar-header">
-        <div class="sidebar-logo" style="cursor: pointer;" onclick="goBack()">
-          <span style="display: flex; align-items: center; margin-right: 8px;">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <line x1="19" y1="12" x2="5" y2="12"></line>
-              <polyline points="12 19 5 12 12 5"></polyline>
-            </svg>
-          </span>
-          <div>
-            <div class="sidebar-title">Back</div>
-            <div class="sidebar-subtitle">to main view</div>
+    <div class="profile-container">
+      <div class="profile-header-nav">
+        <div class="back-button" onclick="goBack()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <line x1="19" y1="12" x2="5" y2="12"></line>
+            <polyline points="12 19 5 12 12 5"></polyline>
+          </svg>
+        </div>
+        <div class="profile-nav-title" id="profile-nav-name">Profile</div>
+      </div>
+
+      <div class="profile-cover" id="profile-cover"></div>
+
+      <div class="profile-content">
+        <div class="profile-top-section">
+          <div class="profile-avatar-wrapper">
+            <div class="profile-avatar-large" id="profile-view-avatar">R</div>
+          </div>
+          <div class="profile-actions">
+            <!-- Placeholders for future actions like Follow/Message if needed -->
+            <!-- <button class="btn btn-secondary btn-sm">Message</button> -->
+            <!-- <button class="btn btn-primary btn-sm">Subscribe</button> -->
           </div>
         </div>
-      </div>
-      <div style="padding: 24px;">
-        <div class="profile-avatar" id="profile-view-avatar"
-          style="width: 80px; height: 80px; font-size: 32px; margin-bottom: 16px;">R</div>
-        <h2 id="profile-view-name" style="font-size: 20px; font-weight: 700; color: var(--text-primary);">Repo Name</h2>
-        <div id="profile-view-handle" style="color: var(--text-secondary); margin-bottom: 12px; font-size: 14px;">@repo
+
+        <div class="profile-details">
+          <div class="profile-name-row">
+            <h1 id="profile-view-name">Repo Name</h1>
+            <span class="verified-badge-large" id="profile-verified-badge" style="display:none">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+              </svg>
+            </span>
+          </div>
+          <div class="profile-handle" id="profile-view-handle">@repo</div>
+
+          <div class="profile-bio" id="profile-view-bio">
+            Repository timeline and activity.
+          </div>
+
+          <div class="profile-metadata-row">
+            <div class="profile-pill">
+              <span class="pill-icon">📦</span>
+              <span id="profile-repo-link">Repository</span>
+            </div>
+            <div class="profile-pill">
+              <span class="pill-icon">🔗</span>
+              <span id="profile-web-link">Website</span>
+            </div>
+            <div class="profile-pill-count" id="profile-stats-count">+2</div>
+          </div>
+
+          <div class="profile-stats-row">
+            <span class="stat-item"><strong id="profile-stories-count">0</strong> <span
+                class="stat-label">Stories</span></span>
+            <span class="stat-item"><strong id="profile-commits-count">0</strong> <span
+                class="stat-label">Commits</span></span>
+            <span class="stat-item"><strong id="profile-contributors-count">0</strong> <span
+                class="stat-label">Contributors</span></span>
+          </div>
         </div>
-        <p id="profile-view-bio" style="font-size: 14px; color: var(--text-muted); line-height: 1.5;">Repository
-          timeline and activity.</p>
-      </div>
-    </aside>
-    <main class="main-content">
-      <header class="content-header">
-        <h1>Profile Timeline</h1>
-        <div class="content-header-subtitle">Recent activity</div>
-      </header>
-      <div class="content-body">
-        <div class="feed-container">
+
+        <div class="profile-tabs">
+          <div class="profile-tab active">Activity</div>
+          <div class="profile-tab">Posts</div>
+          <div class="profile-tab">Likes</div>
+          <div class="profile-tab">Reads</div>
+        </div>
+
+        <div class="feed-container" style="padding-top: 0;">
           <div class="feed" id="profile-feed"></div>
         </div>
       </div>
-    </main>
+    </div>
   </div>
 
   <!-- Edit Repo Modal -->
@@ -3005,7 +3319,7 @@ store.pushHistory = function (state, title, url) {
 
 function closeOverlays() {
   document.getElementById('view-detail').classList.remove('open');
-  document.getElementById('view-profile').style.display = 'none';
+  document.getElementById('view-profile').classList.remove('open');
   document.getElementById('view-main').style.display = 'flex';
 }
 
@@ -3560,7 +3874,7 @@ function toggleDateGroup(label) {
 /**
  * Render stories to the feed with date grouping
  */
-function renderStories(stories, containerId = 'feed') {
+function renderStories(stories, containerId = 'feed', options = {}) {
   const feed = document.getElementById(containerId);
   const searchQuery = store.get('searchQuery');
 
@@ -3585,7 +3899,7 @@ function renderStories(stories, containerId = 'feed') {
 
   // If searching, don't group - show flat list with highlights
   if (searchQuery) {
-    feed.innerHTML = stories.map(s => renderStoryCard(s, searchQuery)).join('');
+    feed.innerHTML = stories.map(s => renderStoryCard(s, searchQuery, options)).join('');
     return;
   }
 
@@ -3600,7 +3914,7 @@ function renderStories(stories, containerId = 'feed') {
       <div class="date-header">
         <span class="date-header-label">${label}</span>
       </div>
-      ${groupStories.map(s => renderStoryCard(s, searchQuery)).join('')}
+      ${groupStories.map(s => renderStoryCard(s, searchQuery, options)).join('')}
     `;
   });
 
@@ -3610,28 +3924,44 @@ function renderStories(stories, containerId = 'feed') {
 /**
  * Render a single story card
  */
-function renderStoryCard(s, searchQuery) {
+function renderStoryCard(s, searchQuery, options = {}) {
   const timeStr = timeSince(new Date(s.started_at || s.created_at));
   const category = s.category || 'chore';
   const repoName = s.repo_name || 'cli';
-  const username = s.author_name || s.username || 'unknown';
+  let username = s.author_name || s.username || 'unknown';
   const isVerified = s.verified || false;
 
   const displayTitle = highlightText(cleanTitle(s.title), searchQuery);
   const displayProblem = s.problem ? highlightText(s.problem, searchQuery) : '';
   const displayApproach = s.approach ? highlightText(s.approach, searchQuery) : '';
-  const displayUsername = highlightText(username, searchQuery);
 
-  const avatarColor = stringToColor(username);
-  const avatarLetter = username.substring(0, 1).toUpperCase();
+  let avatarColor = stringToColor(username);
+  let avatarLetter = username.substring(0, 1).toUpperCase();
+  let displayUsername = highlightText(username, searchQuery);
+  let handleText = `@${repoName}`;
   const verifiedBadge = isVerified ? '<span class="verified-badge" title="GPG signed commits">✓</span>' : '';
 
-  // Tags as hashtags
+  let contributionNote = '';
+
+  // Override for profile view (Repository as Author)
+  if (options.useRepoAsAuthor) {
+    username = repoName; // The author is the repo
+    displayUsername = repoName;
+    avatarColor = stringToColor(repoName);
+    avatarLetter = repoName.substring(0, 1).toUpperCase();
+    handleText = `@${repoName}`;
+
+    // Original author credit
+    const originalAuthor = s.author_name || s.username || 'unknown';
+    contributionNote = `<div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;"> <span style="opacity:0.7">Contributed by</span> <span style="font-weight:500">${escapeHtml(originalAuthor)}</span></div>`;
+  }
+
+  // Tags as hashtags (clickable to filter)
   const tags = [];
   if (s.technologies && s.technologies.length) {
-    s.technologies.slice(0, 3).forEach(t => tags.push(`#${t.toLowerCase().replace(/\s+/g, '')}`));
+    s.technologies.slice(0, 3).forEach(t => tags.push(t.toLowerCase().replace(/\s+/g, '')));
   }
-  const tagsHtml = tags.length ? tags.map(t => `<span class="hashtag">${highlightText(t, searchQuery)}</span>`).join(' ') : '';
+  const tagsHtml = tags.length ? tags.map(t => `<span class="hashtag" onclick="filterByTag(event, '${t}')">#${highlightText(t, searchQuery)}</span>`).join(' ') : '';
 
   // Combine title and problem/approach as the post content
   const bodyText = displayProblem || displayApproach;
@@ -3647,11 +3977,12 @@ function renderStoryCard(s, searchQuery) {
 
   return `
     <article class="post-card" id="post-${s.id}" onclick="openStory(event, '${s.id}')">
-      <div class="post-avatar" style="background:${avatarColor}">${avatarLetter}</div>
+      <div class="post-avatar" style="background:${avatarColor}; cursor: pointer;" onclick="openProfile(event, '${repoName}')">${avatarLetter}</div>
       <div class="post-body">
+        ${options.useRepoAsAuthor ? contributionNote : ''}
         <div class="post-header">
-          <span class="post-author">${displayUsername}${verifiedBadge}</span>
-          <span class="post-handle">@${repoName}</span>
+          <span class="post-author" onclick="openProfile(event, '${repoName}')">${displayUsername}${!options.useRepoAsAuthor ? verifiedBadge : ''}</span>
+          <span class="post-handle" onclick="openProfile(event, '${repoName}')">${handleText}</span>
           <span class="post-meta-sep">·</span>
           <span class="post-time">${timeStr}</span>
         </div>
@@ -3691,7 +4022,7 @@ function openStory(event, storyId, pushState = true) {
     window.lastScrollY = window.scrollY;
 
     // Determine current view for back button logic if any
-    if (document.getElementById('view-profile').style.display === 'flex') {
+    if (document.getElementById('view-profile').classList.contains('open')) {
       store.update('previousView', 'view-profile');
     } else {
       store.update('previousView', 'view-main');
@@ -3827,26 +4158,61 @@ function openProfile(event, repoName, pushState = true) {
   }
 
   document.getElementById('view-main').style.display = 'none';
-  document.getElementById('view-detail').style.display = 'none';
+  document.getElementById('view-detail').classList.remove('open');
 
   const profileView = document.getElementById('view-profile');
-  profileView.style.display = 'flex';
+  profileView.classList.add('open');
   window.scrollTo(0, 0);
 
   const avatarColor = stringToColor(repoName);
   const avatarLetter = repoName.substring(0, 1).toUpperCase();
 
-  document.getElementById('profile-view-avatar').style.background = avatarColor;
-  document.getElementById('profile-view-avatar').textContent = avatarLetter;
+  // Avatar
+  const avatarEl = document.getElementById('profile-view-avatar');
+  avatarEl.style.background = avatarColor;
+  avatarEl.textContent = avatarLetter;
+
+  // Header
   document.getElementById('profile-view-name').textContent = repoName;
+  document.getElementById('profile-nav-name').textContent = repoName;
   document.getElementById('profile-view-handle').textContent = '@' + repoName;
+
+  // Cover gradients based on repo name hash
+  const hue1 = Math.abs(stringToColor(repoName + '1').hashCode() || 0) % 360;
+  const hue2 = Math.abs(stringToColor(repoName + '2').hashCode() || 0) % 360;
+  document.getElementById('profile-cover').style.background = `linear-gradient(135deg, hsl(${hue1}, 70%, 80%) 0%, hsl(${hue2}, 70%, 85%) 100%)`;
 
   const stories = store.get('stories');
   const profileStories = stories.filter(s => s.repo_name === repoName);
-  document.getElementById('profile-view-bio').textContent = `${profileStories.length} stories in this repository.`;
 
-  renderStories(profileStories, 'profile-feed');
+  // Stats
+  const totalCommits = profileStories.reduce((acc, s) => acc + (s.total_commits || 0), 0);
+  const contributors = new Set(profileStories.map(s => s.author_name)).size;
+
+  document.getElementById('profile-stories-count').textContent = profileStories.length;
+  document.getElementById('profile-commits-count').textContent = totalCommits;
+  document.getElementById('profile-contributors-count').textContent = contributors;
+  document.getElementById('profile-stats-count').textContent = `+${contributors} contributors`; // Using contributors count for top pill for now
+
+  // Bio
+  const latestStory = profileStories[0];
+  const lastActive = latestStory ? timeSince(new Date(latestStory.started_at || latestStory.created_at)) : 'a while ago';
+  document.getElementById('profile-view-bio').textContent = `Repository tracked by Repr. Active ${lastActive}. Contains ${profileStories.length} stories.`;
+
+  renderStories(profileStories, 'profile-feed', { useRepoAsAuthor: true });
 }
+
+// Helper to get simple hash code from color string (or just random if needed, but keeping it deterministic is better)
+String.prototype.hashCode = function () {
+  let hash = 0, i, chr;
+  if (this.length === 0) return hash;
+  for (i = 0; i < this.length; i++) {
+    chr = this.charCodeAt(i);
+    hash = ((hash << 5) - hash) + chr;
+    hash |= 0;
+  }
+  return hash;
+};
 
 /**
  * Go back to previous view
@@ -3864,8 +4230,8 @@ function goBack() {
 
     if (detailView.classList.contains('open')) {
       detailView.classList.remove('open');
-    } else if (profileView.style.display === 'flex') {
-      document.getElementById('view-profile').style.display = 'none';
+    } else if (profileView.classList.contains('open')) {
+      profileView.classList.remove('open');
       document.getElementById('view-main').style.display = 'flex';
     }
 
@@ -3924,9 +4290,25 @@ function renderSkeletons(containerId = 'feed', count = 3) {
   feed.innerHTML = html;
 }
 
+/**
+ * Filter stories by hashtag
+ */
+function filterByTag(event, tag) {
+  if (event) event.stopPropagation();
+
+  const searchInput = document.getElementById('search-input');
+  searchInput.value = tag;
+  store.update('searchQuery', tag.toLowerCase());
+  filterAndRenderStories();
+
+  // Make sure we're on the stories view
+  switchMainView('stories', false);
+}
+
 // Expose functions to global scope for inline onclick handlers
 window.openStory = openStory;
 window.openProfile = openProfile;
+window.filterByTag = filterByTag;
 window.triggerGenerationClick = triggerGenerationClick;
 window.goBack = goBack;
 window.refreshStories = refreshStories;

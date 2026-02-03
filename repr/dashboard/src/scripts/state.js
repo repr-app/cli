@@ -130,7 +130,15 @@ store.pushHistory = function (state, title, url) {
 };
 
 function closeOverlays() {
-  document.getElementById('view-detail').classList.remove('open');
-  document.getElementById('view-profile').style.display = 'none';
-  document.getElementById('view-main').style.display = 'flex';
+  const detail = document.getElementById('view-detail');
+  if (detail) {
+    detail.classList.remove('open');
+    detail.style.display = 'none';
+  }
+
+  const profile = document.getElementById('view-profile');
+  if (profile) {
+    profile.classList.remove('open');
+    profile.style.display = 'none';
+  }
 }

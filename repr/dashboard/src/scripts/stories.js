@@ -81,13 +81,20 @@ async function initStories() {
 
     document.getElementById('status-text').innerText = `${stats.count} stories · ${stats.repos} repos`;
     store.update('stories', storiesData.stories);
+    
+    // Update right sidebar stats
+    updateSidebarStats(storiesData.stories, stats.repos);
   } catch (error) {
     console.warn('Using mock data:', error);
     store.update('stories', MOCK_STORIES);
     document.getElementById('status-text').innerText = `${MOCK_STORIES.length} stories · Demo Mode`;
+    
+    // Update right sidebar stats with mock data
+    updateSidebarStats(MOCK_STORIES, 3);
   }
 
   renderRepoTabs();
+  renderRecommendedRepos();
   filterAndRenderStories();
 
   // Initialize router after stories are loaded
@@ -101,6 +108,63 @@ async function initStories() {
   if (viewParam && ['stories', 'settings', 'llm', 'privacy', 'repos', 'cron'].includes(viewParam)) {
     switchMainView(viewParam, false); // false = don't push to history
   }
+}
+
+/**
+ * Update the right sidebar statistics
+ */
+function updateSidebarStats(stories, reposCount) {
+  const statStories = document.getElementById('stat-total-stories');
+  const statRepos = document.getElementById('stat-total-repos');
+  
+  if (statStories) statStories.textContent = stories.length;
+  if (statRepos) statRepos.textContent = reposCount;
+}
+
+/**
+ * Render recommended repositories in the right sidebar
+ */
+function renderRecommendedRepos() {
+  const container = document.getElementById('recommended-repos');
+  if (!container) return;
+  
+  const stories = store.get('stories');
+  const repoMap = {};
+  
+  stories.forEach(s => {
+    if (!repoMap[s.repo_name]) {
+      repoMap[s.repo_name] = {
+        name: s.repo_name,
+        count: 0,
+        lastActive: s.created_at
+      };
+    }
+    repoMap[s.repo_name].count++;
+    if (new Date(s.created_at) > new Date(repoMap[s.repo_name].lastActive)) {
+      repoMap[s.repo_name].lastActive = s.created_at;
+    }
+  });
+  
+  const sortedRepos = Object.values(repoMap).sort((a, b) => b.count - a.count).slice(0, 3);
+  
+  if (sortedRepos.length === 0) {
+    container.innerHTML = '<div class="loading-text">No repositories yet</div>';
+    return;
+  }
+  
+  container.innerHTML = sortedRepos.map(repo => {
+    const color = stringToColor(repo.name);
+    const letter = repo.name.substring(0, 1).toUpperCase();
+    return `
+      <div class="widget-item" onclick="openProfile(event, '${repo.name}')">
+        <div class="widget-item-avatar" style="background: ${color}">${letter}</div>
+        <div class="widget-item-info">
+          <div class="widget-item-name">${repo.name}</div>
+          <div class="widget-item-subtitle">${repo.count} stories</div>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 /**
@@ -234,7 +298,7 @@ function toggleDateGroup(label) {
 /**
  * Render stories to the feed with date grouping
  */
-function renderStories(stories, containerId = 'feed') {
+function renderStories(stories, containerId = 'feed', options = {}) {
   const feed = document.getElementById(containerId);
   const searchQuery = store.get('searchQuery');
 
@@ -259,7 +323,7 @@ function renderStories(stories, containerId = 'feed') {
 
   // If searching, don't group - show flat list with highlights
   if (searchQuery) {
-    feed.innerHTML = stories.map(s => renderStoryCard(s, searchQuery)).join('');
+    feed.innerHTML = stories.map(s => renderStoryCard(s, searchQuery, options)).join('');
     return;
   }
 
@@ -274,7 +338,7 @@ function renderStories(stories, containerId = 'feed') {
       <div class="date-header">
         <span class="date-header-label">${label}</span>
       </div>
-      ${groupStories.map(s => renderStoryCard(s, searchQuery)).join('')}
+      ${groupStories.map(s => renderStoryCard(s, searchQuery, options)).join('')}
     `;
   });
 
@@ -284,28 +348,44 @@ function renderStories(stories, containerId = 'feed') {
 /**
  * Render a single story card
  */
-function renderStoryCard(s, searchQuery) {
+function renderStoryCard(s, searchQuery, options = {}) {
   const timeStr = timeSince(new Date(s.started_at || s.created_at));
   const category = s.category || 'chore';
   const repoName = s.repo_name || 'cli';
-  const username = s.author_name || s.username || 'unknown';
+  let username = s.author_name || s.username || 'unknown';
   const isVerified = s.verified || false;
 
   const displayTitle = highlightText(cleanTitle(s.title), searchQuery);
   const displayProblem = s.problem ? highlightText(s.problem, searchQuery) : '';
   const displayApproach = s.approach ? highlightText(s.approach, searchQuery) : '';
-  const displayUsername = highlightText(username, searchQuery);
 
-  const avatarColor = stringToColor(username);
-  const avatarLetter = username.substring(0, 1).toUpperCase();
+  let avatarColor = stringToColor(username);
+  let avatarLetter = username.substring(0, 1).toUpperCase();
+  let displayUsername = highlightText(username, searchQuery);
+  let handleText = `@${repoName}`;
   const verifiedBadge = isVerified ? '<span class="verified-badge" title="GPG signed commits">✓</span>' : '';
 
-  // Tags as hashtags
+  let contributionNote = '';
+
+  // Override for profile view (Repository as Author)
+  if (options.useRepoAsAuthor) {
+    username = repoName; // The author is the repo
+    displayUsername = repoName;
+    avatarColor = stringToColor(repoName);
+    avatarLetter = repoName.substring(0, 1).toUpperCase();
+    handleText = `@${repoName}`;
+
+    // Original author credit
+    const originalAuthor = s.author_name || s.username || 'unknown';
+    contributionNote = `<div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;"> <span style="opacity:0.7">Contributed by</span> <span style="font-weight:500">${escapeHtml(originalAuthor)}</span></div>`;
+  }
+
+  // Tags as hashtags (clickable to filter)
   const tags = [];
   if (s.technologies && s.technologies.length) {
-    s.technologies.slice(0, 3).forEach(t => tags.push(`#${t.toLowerCase().replace(/\s+/g, '')}`));
+    s.technologies.slice(0, 3).forEach(t => tags.push(t.toLowerCase().replace(/\s+/g, '')));
   }
-  const tagsHtml = tags.length ? tags.map(t => `<span class="hashtag">${highlightText(t, searchQuery)}</span>`).join(' ') : '';
+  const tagsHtml = tags.length ? tags.map(t => `<span class="hashtag" onclick="filterByTag(event, '${t}')">#${highlightText(t, searchQuery)}</span>`).join(' ') : '';
 
   // Combine title and problem/approach as the post content
   const bodyText = displayProblem || displayApproach;
@@ -321,11 +401,12 @@ function renderStoryCard(s, searchQuery) {
 
   return `
     <article class="post-card" id="post-${s.id}" onclick="openStory(event, '${s.id}')">
-      <div class="post-avatar" style="background:${avatarColor}">${avatarLetter}</div>
+      <div class="post-avatar" style="background:${avatarColor}; cursor: pointer;" onclick="openProfile(event, '${repoName}')">${avatarLetter}</div>
       <div class="post-body">
+        ${options.useRepoAsAuthor ? contributionNote : ''}
         <div class="post-header">
-          <span class="post-author">${displayUsername}${verifiedBadge}</span>
-          <span class="post-handle">@${repoName}</span>
+          <span class="post-author" onclick="openProfile(event, '${repoName}')">${displayUsername}${!options.useRepoAsAuthor ? verifiedBadge : ''}</span>
+          <span class="post-handle" onclick="openProfile(event, '${repoName}')">${handleText}</span>
           <span class="post-meta-sep">·</span>
           <span class="post-time">${timeStr}</span>
         </div>
@@ -333,15 +414,30 @@ function renderStoryCard(s, searchQuery) {
         ${mediaHtml}
         ${tagsHtml ? `<div class="post-tags">${tagsHtml}</div>` : ''}
         <div class="post-actions">
-          <div class="post-action" title="${category}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <div class="post-action" title="Commits">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
             </svg>
             <span>${s.total_commits || ''}</span>
           </div>
+          <div class="post-action" title="Retell">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="17 1 21 5 17 9"></polyline>
+              <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+              <polyline points="7 23 3 19 7 15"></polyline>
+              <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+            </svg>
+          </div>
           <div class="post-action" title="Like">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+            </svg>
+          </div>
+          <div class="post-action" title="Share">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
+              <polyline points="16 6 12 2 8 6"></polyline>
+              <line x1="12" y1="2" x2="12" y2="15"></line>
             </svg>
           </div>
         </div>
@@ -365,7 +461,7 @@ function openStory(event, storyId, pushState = true) {
     window.lastScrollY = window.scrollY;
 
     // Determine current view for back button logic if any
-    if (document.getElementById('view-profile').style.display === 'flex') {
+    if (document.getElementById('view-profile').classList.contains('open')) {
       store.update('previousView', 'view-profile');
     } else {
       store.update('previousView', 'view-main');
@@ -374,8 +470,12 @@ function openStory(event, storyId, pushState = true) {
     store.pushHistory({ view: 'detail', storyId: storyId }, `Repr - ${cleanTitle(story.title)}`, `?story=${storyId}`);
   }
 
-  const detailView = document.getElementById('view-detail');
-  detailView.classList.add('open');
+  // Hide all main views and show detail
+  ['stories', 'settings', 'llm', 'privacy', 'repos', 'cron', 'profile'].forEach(v => {
+    const el = document.getElementById('view-' + v);
+    if (el) el.style.display = 'none';
+  });
+  document.getElementById('view-detail').style.display = 'block';
   window.scrollTo(0, 0);
 
   const contentEl = document.getElementById('detail-content');
@@ -439,40 +539,36 @@ function openStory(event, storyId, pushState = true) {
   const avatarLetter = username.substring(0, 2).toUpperCase();
 
   contentEl.innerHTML = `
-    <div class="post" style="border-bottom: 0; cursor: default; padding: 16px;">
-        <div class="post-content">
-            <div class="post-header">
-              <div class="user-info" onclick="openProfile(event, '${repoName}')">
-                <div class="tiny-avatar" style="background:${avatarColor}">${avatarLetter}</div>
-                <div>
-                  <span class="name">/u/${escapeHtml(username)}${verifiedBadge}</span>
-                  <span style="color: var(--text-muted); font-size: 12px; margin-left: 4px;">/r/${repoName}</span>
-                  ${signatureInfo}
-                </div>
-              </div>
-              <span class="category ${category}">${category}</span>
-              <span class="time">${timeStr}</span>
-              ${techHtml}
-            </div>
-            <div class="post-title" style="font-size: 24px;">${escapeHtml(displayTitle)}</div>
-            ${story.problem ? `<div class="post-problem" style="font-size: 16px; margin-bottom:12px;">${escapeHtml(story.problem)}</div>` : ''}
-            ${story.approach ? `<div class="post-approach" style="font-size: 16px;">${escapeHtml(story.approach)}</div>` : ''}
+    <div class="post-detail">
+        <div class="post-detail-header">
+          <div class="post-avatar" style="background:${avatarColor}; width: 48px; height: 48px; font-size: 18px;" onclick="openProfile(event, '${repoName}')">${avatarLetter}</div>
+          <div class="post-detail-author-info">
+            <div class="post-author" onclick="openProfile(event, '${repoName}')" style="font-size: 16px;">${escapeHtml(username)}${verifiedBadge}</div>
+            <div class="post-handle" onclick="openProfile(event, '${repoName}')" style="font-size: 15px;">@${repoName} · ${timeStr}</div>
+          </div>
+          <div class="post-detail-category">
+             <span class="category ${category}">${category}</span>
+          </div>
+        </div>
+        
+        <div class="post-detail-body">
+            <h1 class="post-detail-title">${escapeHtml(displayTitle)}</h1>
+            ${story.problem ? `<div class="post-detail-text" style="font-size: 18px; color: var(--text-primary); margin-bottom: 24px;">${escapeHtml(story.problem)}</div>` : ''}
+            ${story.approach ? `<div class="post-detail-text" style="font-size: 18px; color: var(--text-secondary); line-height: 1.6;">${escapeHtml(story.approach)}</div>` : ''}
 
             ${showHtml}
             ${diagramHtml}
 
-            <hr style="border: 0; border-top: 1px solid var(--border); margin: 32px 0;">
-
             ${story.lessons && story.lessons.length ? `
-              <div class="insight-box">
-                <div class="insight-label">Transferable Insight</div>
+              <div class="insight-box" style="margin-top: 32px;">
+                <div class="insight-label">Key Insight</div>
                 ${story.lessons.map(l => `<div class="insight-text">${escapeHtml(l)}</div>`).join('')}
               </div>
             ` : ''}
 
             ${story.implementation_details && story.implementation_details.length ? `
-               <div class="section-subtitle">Implementation Details</div>
-               <ul style="padding-left:16px; color:var(--text-secondary); font-size:15px; line-height:1.6; margin-bottom: 24px;">
+               <div class="section-subtitle">Implementation</div>
+               <ul class="detail-list">
                  ${story.implementation_details.map(d => `<li>${escapeHtml(d)}</li>`).join('')}
                </ul>
             ` : ''}
@@ -480,6 +576,19 @@ function openStory(event, storyId, pushState = true) {
             ${filesHtml}
             ${snippetsHtml}
             ${fileChangesHtml}
+        </div>
+        
+        <div class="post-detail-footer">
+          <div class="post-actions" style="max-width: none; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 32px;">
+            <!-- Same actions as card -->
+            <div class="post-action">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+              <span>${story.total_commits || ''}</span>
+            </div>
+             <div class="post-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg></div>
+            <div class="post-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg></div>
+            <div class="post-action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg></div>
+          </div>
         </div>
       </div>
   `;
@@ -500,27 +609,63 @@ function openProfile(event, repoName, pushState = true) {
     store.pushHistory({ view: 'profile', repoName: repoName }, `Repr - @${repoName}`, `?profile=${repoName}`);
   }
 
-  document.getElementById('view-main').style.display = 'none';
-  document.getElementById('view-detail').style.display = 'none';
-
-  const profileView = document.getElementById('view-profile');
-  profileView.style.display = 'flex';
+  // Hide all main views and show profile
+  ['stories', 'settings', 'llm', 'privacy', 'repos', 'cron', 'detail'].forEach(v => {
+    const el = document.getElementById('view-' + v);
+    if (el) el.style.display = 'none';
+  });
+  document.getElementById('view-profile').style.display = 'block';
   window.scrollTo(0, 0);
 
   const avatarColor = stringToColor(repoName);
   const avatarLetter = repoName.substring(0, 1).toUpperCase();
 
-  document.getElementById('profile-view-avatar').style.background = avatarColor;
-  document.getElementById('profile-view-avatar').textContent = avatarLetter;
+  // Avatar
+  const avatarEl = document.getElementById('profile-view-avatar');
+  avatarEl.style.background = avatarColor;
+  avatarEl.textContent = avatarLetter;
+
+  // Header
   document.getElementById('profile-view-name').textContent = repoName;
+  document.getElementById('profile-nav-name').textContent = repoName;
   document.getElementById('profile-view-handle').textContent = '@' + repoName;
+
+  // Cover gradients based on repo name hash
+  const hue1 = Math.abs(stringToColor(repoName + '1').hashCode() || 0) % 360;
+  const hue2 = Math.abs(stringToColor(repoName + '2').hashCode() || 0) % 360;
+  document.getElementById('profile-cover').style.background = `linear-gradient(135deg, hsl(${hue1}, 70%, 80%) 0%, hsl(${hue2}, 70%, 85%) 100%)`;
 
   const stories = store.get('stories');
   const profileStories = stories.filter(s => s.repo_name === repoName);
-  document.getElementById('profile-view-bio').textContent = `${profileStories.length} stories in this repository.`;
 
-  renderStories(profileStories, 'profile-feed');
+  // Stats
+  const totalCommits = profileStories.reduce((acc, s) => acc + (s.total_commits || 0), 0);
+  const contributors = new Set(profileStories.map(s => s.author_name)).size;
+
+  document.getElementById('profile-stories-count').textContent = profileStories.length;
+  document.getElementById('profile-commits-count').textContent = totalCommits;
+  document.getElementById('profile-contributors-count').textContent = contributors;
+  document.getElementById('profile-stats-count').textContent = `+${contributors} contributors`; // Using contributors count for top pill for now
+
+  // Bio
+  const latestStory = profileStories[0];
+  const lastActive = latestStory ? timeSince(new Date(latestStory.started_at || latestStory.created_at)) : 'a while ago';
+  document.getElementById('profile-view-bio').textContent = `Repository tracked by Repr. Active ${lastActive}. Contains ${profileStories.length} stories.`;
+
+  renderStories(profileStories, 'profile-feed', { useRepoAsAuthor: true });
 }
+
+// Helper to get simple hash code from color string (or just random if needed, but keeping it deterministic is better)
+String.prototype.hashCode = function () {
+  let hash = 0, i, chr;
+  if (this.length === 0) return hash;
+  for (i = 0; i < this.length; i++) {
+    chr = this.charCodeAt(i);
+    hash = ((hash << 5) - hash) + chr;
+    hash |= 0;
+  }
+  return hash;
+};
 
 /**
  * Go back to previous view
@@ -533,16 +678,7 @@ function goBack() {
     history.back();
   } else {
     // Fallback if no history
-    const detailView = document.getElementById('view-detail');
-    const profileView = document.getElementById('view-profile');
-
-    if (detailView.classList.contains('open')) {
-      detailView.classList.remove('open');
-    } else if (profileView.style.display === 'flex') {
-      document.getElementById('view-profile').style.display = 'none';
-      document.getElementById('view-main').style.display = 'flex';
-    }
-
+    switchMainView('stories', false);
     if (window.lastScrollY) window.scrollTo(0, window.lastScrollY);
   }
 }
@@ -598,9 +734,25 @@ function renderSkeletons(containerId = 'feed', count = 3) {
   feed.innerHTML = html;
 }
 
+/**
+ * Filter stories by hashtag
+ */
+function filterByTag(event, tag) {
+  if (event) event.stopPropagation();
+
+  const searchInput = document.getElementById('search-input');
+  searchInput.value = tag;
+  store.update('searchQuery', tag.toLowerCase());
+  filterAndRenderStories();
+
+  // Make sure we're on the stories view
+  switchMainView('stories', false);
+}
+
 // Expose functions to global scope for inline onclick handlers
 window.openStory = openStory;
 window.openProfile = openProfile;
+window.filterByTag = filterByTag;
 window.triggerGenerationClick = triggerGenerationClick;
 window.goBack = goBack;
 window.refreshStories = refreshStories;
