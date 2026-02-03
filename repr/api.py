@@ -419,10 +419,10 @@ async def push_stories_batch(stories: list[dict[str, Any]]) -> dict[str, Any]:
 async def get_public_profile_settings() -> dict[str, Any]:
     """
     Get the current user's public profile settings.
-    
+
     Returns:
         Dict with username, is_profile_public, profile_url, etc.
-    
+
     Raises:
         APIError: If request fails
         AuthError: If not authenticated
@@ -436,10 +436,231 @@ async def get_public_profile_settings() -> dict[str, Any]:
             )
             response.raise_for_status()
             return response.json()
-            
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise AuthError("Session expired. Please run 'repr login' again.")
             raise APIError(f"Failed to get profile settings: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def set_story_visibility(story_id: str, visibility: str) -> dict[str, Any]:
+    """
+    Set story visibility.
+
+    Args:
+        story_id: ID of the story
+        visibility: Visibility setting (public, private, friends_only)
+
+    Returns:
+        Updated story data
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.patch(
+                f"{_get_stories_url()}/{story_id}/visibility",
+                headers=_get_headers(),
+                json={"visibility": visibility},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to set story visibility: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def get_friends() -> list[dict[str, Any]]:
+    """
+    Get friends list.
+
+    Returns:
+        List of friend data dicts
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                f"{get_api_base()}/friends",
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to get friends: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def send_friend_request(username: str) -> dict[str, Any]:
+    """
+    Send friend request.
+
+    Args:
+        username: Username to send friend request to
+
+    Returns:
+        Friend request data
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{get_api_base()}/friends/request",
+                headers=_get_headers(),
+                json={"to_username": username},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to send friend request: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def get_friend_requests() -> list[dict[str, Any]]:
+    """
+    Get pending friend requests.
+
+    Returns:
+        List of friend request data dicts
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                f"{get_api_base()}/friends/requests",
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to get friend requests: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def approve_friend_request(request_id: str) -> dict[str, Any]:
+    """
+    Approve friend request.
+
+    Args:
+        request_id: ID of the friend request to approve
+
+    Returns:
+        Friend request data
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{get_api_base()}/friends/approve/{request_id}",
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to approve friend request: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def reject_friend_request(request_id: str) -> dict[str, Any]:
+    """
+    Reject friend request.
+
+    Args:
+        request_id: ID of the friend request to reject
+
+    Returns:
+        Friend request data
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{get_api_base()}/friends/reject/{request_id}",
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to reject friend request: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def get_friend_stories(username: str) -> list[dict[str, Any]]:
+    """
+    Get stories from a friend.
+
+    Args:
+        username: Username of the friend
+
+    Returns:
+        List of story data dicts
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                f"{get_api_base()}/friends/{username}/stories",
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to get friend stories: {e.response.status_code}")
         except httpx.RequestError as e:
             raise APIError(f"Network error: {str(e)}")

@@ -120,6 +120,8 @@ data_app = typer.Typer(help="Backup, restore, and manage data")
 profile_app = typer.Typer(help="View and manage profile")
 mcp_app = typer.Typer(help="MCP server for AI agent integration")
 timeline_app = typer.Typer(help="Unified timeline of commits + AI sessions")
+friends_app = typer.Typer(help="Manage friends")
+skill_app = typer.Typer(help="Manage repr skill for AI agents")
 
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(cron_app, name="cron")
@@ -130,6 +132,8 @@ app.add_typer(data_app, name="data")
 app.add_typer(profile_app, name="profile")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(timeline_app, name="timeline")
+app.add_typer(friends_app, name="friends")
+app.add_typer(skill_app, name="skill")
 
 
 def version_callback(value: bool):
@@ -1355,93 +1359,106 @@ def stories_review():
 
 @app.command()
 def push(
-    story_id: Optional[str] = typer.Option(None, "--story", help="Push specific story"),
-    all_stories: bool = typer.Option(False, "--all", help="Push all unpushed stories"),
+    visibility: str = typer.Option("friends", "--visibility", help="Visibility setting: public, friends, private"),
+    force: bool = typer.Option(False, "--force", help="Re-push all stories, even if already pushed"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would be pushed"),
 ):
     """
-    Publish stories to repr.dev.
-    
+    Sync local stories to repr.dev backend.
+
     Examples:
         repr push
-        repr push --story 01ARYZ6S41TSV4RRFFQ69G5FAV
+        repr push --visibility public
+        repr push --force
     """
     from .privacy import check_cloud_permission, log_cloud_operation
-    
+    from .api import push_stories_batch, APIError, AuthError
+    from .db import get_db
+
+    # Check authentication
+    if not get_access_token():
+        print_error("Not authenticated")
+        print_info("Run 'repr login' to authenticate")
+        raise typer.Exit(1)
+
     allowed, reason = check_cloud_permission("push")
     if not allowed:
         print_error("Publishing blocked")
         print_info(reason)
         raise typer.Exit(1)
-    
-    # Get stories to push
-    if story_id:
-        result = load_story(story_id)
-        if not result:
-            print_error(f"Story not found: {story_id}")
-            raise typer.Exit(1)
-        content, metadata = result
-        to_push = [{"id": story_id, "content": content, **metadata}]
-    else:
-        to_push = get_unpushed_stories()
-    
-    if not to_push:
-        print_success("All stories already synced!")
+
+    # Get all stories from database
+    db = get_db()
+    all_stories = db.list_stories(limit=10000)
+
+    if not all_stories:
+        print_info("No stories to push")
         raise typer.Exit()
-    
-    console.print(f"Publishing {len(to_push)} story(ies) to repr.dev...")
+
+    console.print(f"Found {len(all_stories)} story(ies) in local database")
     console.print()
-    
+
     if dry_run:
-        for s in to_push:
-            console.print(f"  • {s.get('summary', s.get('id'))}")
+        for story in all_stories:
+            console.print(f"  • {story.title[:60]}")
         console.print()
-        console.print("Run without --dry-run to publish")
+        console.print("Run without --dry-run to push")
         raise typer.Exit()
-    
+
     # Build batch payload
-    from .api import push_stories_batch
-    
+    console.print(f"Preparing to push with visibility: {visibility}...")
+
     stories_payload = []
-    for s in to_push:
-        content, meta = load_story(s["id"])
-        # Use local story ID as client_id for sync
-        payload = {**meta, "content": content, "client_id": s["id"]}
+    for story in all_stories:
+        # Convert Story model to dict and ensure author_name is included
+        payload = story.model_dump(mode="json")
+        payload["visibility"] = visibility
+        payload["client_id"] = story.id  # Use story ID for sync tracking
         stories_payload.append(payload)
-    
-    # Push all stories in a single batch request
-    try:
-        result = asyncio.run(push_stories_batch(stories_payload))
-        pushed = result.get("pushed", 0)
-        results = result.get("results", [])
-        
-        # Mark successful stories as pushed and display results
-        for i, story_result in enumerate(results):
-            story_id_local = to_push[i]["id"]
-            summary = to_push[i].get("summary", story_id_local)[:50]
-            
-            if story_result.get("success"):
-                mark_story_pushed(story_id_local)
-                console.print(f"  [{BRAND_SUCCESS}]✓[/] {summary}")
-            else:
-                error_msg = story_result.get("error", "Unknown error")
-                console.print(f"  [{BRAND_ERROR}]✗[/] {summary}: {error_msg}")
-        
-    except (APIError, AuthError) as e:
-        print_error(f"Batch push failed: {e}")
-        raise typer.Exit(1)
-    
+
+    # Push all stories in batch with progress
+    console.print(f"Pushing {len(stories_payload)} stories...")
+    console.print()
+
+    with BatchProgress() as progress:
+        try:
+            result = asyncio.run(push_stories_batch(stories_payload))
+            pushed = result.get("pushed", 0)
+            failed = result.get("failed", 0)
+            results = result.get("results", [])
+
+            # Display results
+            for i, story_result in enumerate(results):
+                story_title = all_stories[i].title[:50] if i < len(all_stories) else "Unknown"
+
+                if story_result.get("success"):
+                    console.print(f"  [{BRAND_SUCCESS}]✓[/] {story_title}")
+                else:
+                    error_msg = story_result.get("error", "Unknown error")
+                    console.print(f"  [{BRAND_ERROR}]✗[/] {story_title}: {error_msg}")
+
+        except (APIError, AuthError) as e:
+            print_error(f"Batch push failed: {e}")
+            raise typer.Exit(1)
+
     # Log operation
     if pushed > 0:
         log_cloud_operation(
             operation="push",
             destination="repr.dev",
-            payload_summary={"stories_pushed": pushed},
+            payload_summary={
+                "stories_pushed": pushed,
+                "visibility": visibility,
+                "force": force,
+            },
             bytes_sent=0,
         )
-    
+
     console.print()
-    print_success(f"Pushed {pushed}/{len(to_push)} stories")
+    if failed > 0:
+        print_warning(f"Pushed {pushed}/{len(stories_payload)} stories ({failed} failed)")
+    else:
+        print_success(f"Pushed {pushed}/{len(stories_payload)} stories")
 
 
 @app.command()
@@ -3111,6 +3128,254 @@ def profile_link():
     else:
         print_info("Username not set")
         print_info("Run `repr profile set-username <name>`")
+
+
+# =============================================================================
+# PUBLISH/UNPUBLISH COMMANDS
+# =============================================================================
+
+@app.command("publish")
+def publish_story(
+    story_id: str = typer.Argument(..., help="Story ID to publish"),
+    visibility: str = typer.Option("public", "--visibility", "-v", help="Visibility: public, friends, private"),
+):
+    """
+    Set story visibility.
+
+    Examples:
+        repr publish abc123
+        repr publish abc123 --visibility friends
+    """
+    from .api import set_story_visibility, AuthError
+
+    if visibility not in ("public", "friends", "private"):
+        print_error(f"Invalid visibility: {visibility}")
+        print_info("Valid options: public, friends, private")
+        raise typer.Exit(1)
+
+    if not is_authenticated():
+        print_error("Not authenticated")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    try:
+        with create_spinner(f"Setting visibility to {visibility}..."):
+            result = asyncio.run(set_story_visibility(story_id, visibility))
+        print_success(f"Story visibility set to {visibility}")
+    except AuthError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(f"API error: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("unpublish")
+def unpublish_story(
+    story_id: str = typer.Argument(..., help="Story ID to unpublish"),
+):
+    """
+    Set story to private.
+
+    Examples:
+        repr unpublish abc123
+    """
+    from .api import set_story_visibility, AuthError
+
+    if not is_authenticated():
+        print_error("Not authenticated")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    try:
+        with create_spinner("Setting story to private..."):
+            result = asyncio.run(set_story_visibility(story_id, "private"))
+        print_success("Story set to private")
+    except AuthError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(f"API error: {e}")
+        raise typer.Exit(1)
+
+
+# =============================================================================
+# FRIENDS
+# =============================================================================
+
+@friends_app.command("add")
+def friends_add(
+    username: str = typer.Argument(..., help="Username to send friend request to"),
+):
+    """Send friend request.
+
+    Example:
+        repr friends add johndoe
+    """
+    if not is_authenticated():
+        print_error("Friend requests require sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import send_friend_request, AuthError
+
+    try:
+        result = asyncio.run(send_friend_request(username))
+        print_success(f"Friend request sent to {username}")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("list")
+def friends_list():
+    """List friends.
+
+    Example:
+        repr friends list
+    """
+    if not is_authenticated():
+        print_error("Friends list requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import get_friends, AuthError
+
+    try:
+        friends = asyncio.run(get_friends())
+
+        if not friends:
+            print_info("No friends yet")
+            return
+
+        table = create_table("Friends", ["Username", "Added"])
+        for friend in friends:
+            username = friend.get("username", "N/A")
+            added_at = friend.get("created_at", "")
+            # Format the date
+            if added_at:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(added_at.replace("Z", "+00:00"))
+                    added_at = dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+            table.add_row(username, added_at or "N/A")
+        console.print(table)
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("requests")
+def friends_requests():
+    """View pending friend requests.
+
+    Example:
+        repr friends requests
+    """
+    if not is_authenticated():
+        print_error("Friend requests require sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import get_friend_requests, AuthError
+
+    try:
+        requests = asyncio.run(get_friend_requests())
+
+        if not requests:
+            print_info("No pending friend requests")
+            return
+
+        table = create_table("Pending Friend Requests", ["Request ID", "From", "Sent"])
+        for req in requests:
+            request_id = req.get("id", "N/A")
+            from_user = req.get("from_username", "N/A")
+            sent_at = req.get("created_at", "")
+            # Format the date
+            if sent_at:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+                    sent_at = dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+            table.add_row(str(request_id), from_user, sent_at or "N/A")
+        console.print(table)
+
+        print_info("Use `repr friends approve <id>` or `repr friends reject <id>`")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("approve")
+def friends_approve(
+    request_id: str = typer.Argument(..., help="ID of the friend request to approve"),
+):
+    """Approve friend request.
+
+    Example:
+        repr friends approve abc123
+    """
+    if not is_authenticated():
+        print_error("Approving friend requests requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import approve_friend_request, AuthError
+
+    try:
+        result = asyncio.run(approve_friend_request(request_id))
+        print_success("Friend request approved")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("reject")
+def friends_reject(
+    request_id: str = typer.Argument(..., help="ID of the friend request to reject"),
+):
+    """Reject friend request.
+
+    Example:
+        repr friends reject abc123
+    """
+    if not is_authenticated():
+        print_error("Rejecting friend requests requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import reject_friend_request, AuthError
+
+    try:
+        result = asyncio.run(reject_friend_request(request_id))
+        print_info("Friend request rejected")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
 
 
 # =============================================================================
@@ -5354,6 +5619,196 @@ def push_commits():
         raise typer.Exit(1)
 
 
+# ==================== SKILL COMMANDS ====================
+
+# Repr skill content for AI agents
+REPR_SKILL = '''---
+name: repr
+description: Use repr to extract developer context from git history for interviews, reviews, and AI agents
+---
+
+# repr - Developer Context Layer
+
+Use `repr` to capture and surface developer context from git history. Generate stories, prepare for interviews, create performance review material, and provide context to AI agents.
+
+## Quick Start
+
+```bash
+# Initialize (scan repos)
+repr init ~/code
+
+# Generate stories from recent commits
+repr generate --local
+
+# View generated stories
+repr stories
+repr story view <id>
+```
+
+## Common Commands
+
+| Command | Description |
+|---------|-------------|
+| `repr init <path>` | Scan and track repositories |
+| `repr generate --local` | Generate stories using local LLM |
+| `repr generate --days 30` | Generate from last 30 days |
+| `repr stories` | List all stories |
+| `repr story view <id>` | View a specific story |
+| `repr commits --days 7` | Show recent commits |
+| `repr dashboard` | Open web dashboard |
+| `repr mcp serve` | Start MCP server for AI agents |
+
+## Story Generation
+
+```bash
+# Generate with local LLM (Ollama)
+repr generate --local
+
+# Generate from specific timeframe
+repr generate --days 30 --local
+repr generate --since "2 weeks ago" --local
+
+# Generate interview stories (STAR format)
+repr generate --template interview --local
+```
+
+## LLM Configuration
+
+```bash
+# Configure local LLM
+repr llm configure
+
+# Add API keys (stored in OS keychain)
+repr llm add openai
+repr llm add anthropic
+
+# Test LLM connection
+repr llm test
+```
+
+## Use Cases
+
+- **Interview Prep**: Generate STAR-format stories from commits
+- **Performance Reviews**: Summarize months of work with impact
+- **Sprint Demos**: Quick changelogs for stakeholders
+- **AI Context**: MCP server provides work history to Claude/Cursor
+- **Weekly Reflection**: See what you accomplished
+
+## Privacy
+
+- Local-first: data stays in ~/.repr/
+- Air-gapped ready: works fully offline
+- BYOK: use your own API keys
+- Privacy audit: `repr privacy audit`
+'''
+
+
+def _get_skill_path(provider: str) -> Path:
+    """Get the skill installation path for a provider."""
+    home = Path.home()
+    if provider == "claude":
+        return home / ".claude" / "skills" / "repr"
+    elif provider == "gemini":
+        return home / ".gemini" / "skills" / "repr"
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+
+def _is_skill_installed(provider: str) -> bool:
+    """Check if skill is installed for a provider."""
+    skill_path = _get_skill_path(provider) / "SKILL.md"
+    return skill_path.exists()
+
+
+def _install_skill_to(provider: str) -> Path:
+    """Install the repr skill to a provider's skills directory."""
+    skill_dir = _get_skill_path(provider)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(REPR_SKILL)
+    return skill_dir
+
+
+@skill_app.callback(invoke_without_command=True)
+def skill_default(ctx: typer.Context):
+    """View the repr skill for AI agents."""
+    if ctx.invoked_subcommand is None:
+        # Show skill content
+        console.print()
+        console.print(f"[bold {BRAND_PRIMARY}]/repr[/] - [{BRAND_MUTED}]LLM instructions for using repr[/]")
+        console.print()
+
+        # Check installation status
+        claude_installed = _is_skill_installed("claude")
+        gemini_installed = _is_skill_installed("gemini")
+
+        if claude_installed or gemini_installed:
+            console.print(f"[{BRAND_SUCCESS}]Installed:[/]")
+            if claude_installed:
+                console.print(f"  [{BRAND_MUTED}]~/.claude/skills/repr/SKILL.md[/]")
+            if gemini_installed:
+                console.print(f"  [{BRAND_MUTED}]~/.gemini/skills/repr/SKILL.md[/]")
+            console.print()
+
+        console.print(f"[{BRAND_MUTED}]{'─' * 60}[/]")
+        console.print(REPR_SKILL)
+        console.print(f"[{BRAND_MUTED}]{'─' * 60}[/]")
+
+        if not claude_installed and not gemini_installed:
+            console.print(f"\n[{BRAND_MUTED}]Install with:[/] repr skill install")
+        console.print()
+
+
+@skill_app.command("install")
+def skill_install(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="Target provider: claude, gemini, or all (default: all)",
+    ),
+):
+    """Install the repr skill to AI agent providers."""
+    console.print()
+    console.print(f"[bold {BRAND_PRIMARY}]Install repr skill[/]")
+    console.print()
+
+    if not target or target == "all":
+        installed = 0
+
+        # Try Claude
+        try:
+            dest = _install_skill_to("claude")
+            print_success(f"Installed to {dest}")
+            installed += 1
+        except Exception as e:
+            print_warning(f"Could not install to Claude: {e}")
+
+        # Try Gemini
+        try:
+            dest = _install_skill_to("gemini")
+            print_success(f"Installed to {dest}")
+            installed += 1
+        except Exception as e:
+            print_warning(f"Could not install to Gemini: {e}")
+
+        if installed == 0:
+            print_warning("No providers found.")
+        else:
+            console.print(f"\n[{BRAND_MUTED}]LLMs can now use /repr to learn how to run repr commands.[/]\n")
+
+    elif target in ("claude", "gemini"):
+        try:
+            dest = _install_skill_to(target)
+            print_success(f"Installed to {dest}")
+            console.print(f"\n[{BRAND_MUTED}]LLMs can now use /repr to learn how to run repr commands.[/]\n")
+        except Exception as e:
+            print_error(f"Installation failed: {e}")
+            raise typer.Exit(1)
+    else:
+        print_error(f"Unknown target: {target}")
+        console.print(f"[{BRAND_MUTED}]Usage: repr skill install [claude|gemini|all][/]")
+        raise typer.Exit(1)
+
+
 # Entry point
 if __name__ == "__main__":
     app()
@@ -5479,6 +5934,8 @@ data_app = typer.Typer(help="Backup, restore, and manage data")
 profile_app = typer.Typer(help="View and manage profile")
 mcp_app = typer.Typer(help="MCP server for AI agent integration")
 timeline_app = typer.Typer(help="Unified timeline of commits + AI sessions")
+friends_app = typer.Typer(help="Manage friends")
+skill_app = typer.Typer(help="Manage repr skill for AI agents")
 
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(cron_app, name="cron")
@@ -5489,6 +5946,8 @@ app.add_typer(data_app, name="data")
 app.add_typer(profile_app, name="profile")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(timeline_app, name="timeline")
+app.add_typer(friends_app, name="friends")
+app.add_typer(skill_app, name="skill")
 
 
 def version_callback(value: bool):
@@ -6714,93 +7173,106 @@ def stories_review():
 
 @app.command()
 def push(
-    story_id: Optional[str] = typer.Option(None, "--story", help="Push specific story"),
-    all_stories: bool = typer.Option(False, "--all", help="Push all unpushed stories"),
+    visibility: str = typer.Option("friends", "--visibility", help="Visibility setting: public, friends, private"),
+    force: bool = typer.Option(False, "--force", help="Re-push all stories, even if already pushed"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would be pushed"),
 ):
     """
-    Publish stories to repr.dev.
-    
+    Sync local stories to repr.dev backend.
+
     Examples:
         repr push
-        repr push --story 01ARYZ6S41TSV4RRFFQ69G5FAV
+        repr push --visibility public
+        repr push --force
     """
     from .privacy import check_cloud_permission, log_cloud_operation
-    
+    from .api import push_stories_batch, APIError, AuthError
+    from .db import get_db
+
+    # Check authentication
+    if not get_access_token():
+        print_error("Not authenticated")
+        print_info("Run 'repr login' to authenticate")
+        raise typer.Exit(1)
+
     allowed, reason = check_cloud_permission("push")
     if not allowed:
         print_error("Publishing blocked")
         print_info(reason)
         raise typer.Exit(1)
-    
-    # Get stories to push
-    if story_id:
-        result = load_story(story_id)
-        if not result:
-            print_error(f"Story not found: {story_id}")
-            raise typer.Exit(1)
-        content, metadata = result
-        to_push = [{"id": story_id, "content": content, **metadata}]
-    else:
-        to_push = get_unpushed_stories()
-    
-    if not to_push:
-        print_success("All stories already synced!")
+
+    # Get all stories from database
+    db = get_db()
+    all_stories = db.list_stories(limit=10000)
+
+    if not all_stories:
+        print_info("No stories to push")
         raise typer.Exit()
-    
-    console.print(f"Publishing {len(to_push)} story(ies) to repr.dev...")
+
+    console.print(f"Found {len(all_stories)} story(ies) in local database")
     console.print()
-    
+
     if dry_run:
-        for s in to_push:
-            console.print(f"  • {s.get('summary', s.get('id'))}")
+        for story in all_stories:
+            console.print(f"  • {story.title[:60]}")
         console.print()
-        console.print("Run without --dry-run to publish")
+        console.print("Run without --dry-run to push")
         raise typer.Exit()
-    
+
     # Build batch payload
-    from .api import push_stories_batch
-    
+    console.print(f"Preparing to push with visibility: {visibility}...")
+
     stories_payload = []
-    for s in to_push:
-        content, meta = load_story(s["id"])
-        # Use local story ID as client_id for sync
-        payload = {**meta, "content": content, "client_id": s["id"]}
+    for story in all_stories:
+        # Convert Story model to dict and ensure author_name is included
+        payload = story.model_dump(mode="json")
+        payload["visibility"] = visibility
+        payload["client_id"] = story.id  # Use story ID for sync tracking
         stories_payload.append(payload)
-    
-    # Push all stories in a single batch request
-    try:
-        result = asyncio.run(push_stories_batch(stories_payload))
-        pushed = result.get("pushed", 0)
-        results = result.get("results", [])
-        
-        # Mark successful stories as pushed and display results
-        for i, story_result in enumerate(results):
-            story_id_local = to_push[i]["id"]
-            summary = to_push[i].get("summary", story_id_local)[:50]
-            
-            if story_result.get("success"):
-                mark_story_pushed(story_id_local)
-                console.print(f"  [{BRAND_SUCCESS}]✓[/] {summary}")
-            else:
-                error_msg = story_result.get("error", "Unknown error")
-                console.print(f"  [{BRAND_ERROR}]✗[/] {summary}: {error_msg}")
-        
-    except (APIError, AuthError) as e:
-        print_error(f"Batch push failed: {e}")
-        raise typer.Exit(1)
-    
+
+    # Push all stories in batch with progress
+    console.print(f"Pushing {len(stories_payload)} stories...")
+    console.print()
+
+    with BatchProgress() as progress:
+        try:
+            result = asyncio.run(push_stories_batch(stories_payload))
+            pushed = result.get("pushed", 0)
+            failed = result.get("failed", 0)
+            results = result.get("results", [])
+
+            # Display results
+            for i, story_result in enumerate(results):
+                story_title = all_stories[i].title[:50] if i < len(all_stories) else "Unknown"
+
+                if story_result.get("success"):
+                    console.print(f"  [{BRAND_SUCCESS}]✓[/] {story_title}")
+                else:
+                    error_msg = story_result.get("error", "Unknown error")
+                    console.print(f"  [{BRAND_ERROR}]✗[/] {story_title}: {error_msg}")
+
+        except (APIError, AuthError) as e:
+            print_error(f"Batch push failed: {e}")
+            raise typer.Exit(1)
+
     # Log operation
     if pushed > 0:
         log_cloud_operation(
             operation="push",
             destination="repr.dev",
-            payload_summary={"stories_pushed": pushed},
+            payload_summary={
+                "stories_pushed": pushed,
+                "visibility": visibility,
+                "force": force,
+            },
             bytes_sent=0,
         )
-    
+
     console.print()
-    print_success(f"Pushed {pushed}/{len(to_push)} stories")
+    if failed > 0:
+        print_warning(f"Pushed {pushed}/{len(stories_payload)} stories ({failed} failed)")
+    else:
+        print_success(f"Pushed {pushed}/{len(stories_payload)} stories")
 
 
 @app.command()
@@ -8470,6 +8942,254 @@ def profile_link():
     else:
         print_info("Username not set")
         print_info("Run `repr profile set-username <name>`")
+
+
+# =============================================================================
+# PUBLISH/UNPUBLISH COMMANDS
+# =============================================================================
+
+@app.command("publish")
+def publish_story(
+    story_id: str = typer.Argument(..., help="Story ID to publish"),
+    visibility: str = typer.Option("public", "--visibility", "-v", help="Visibility: public, friends, private"),
+):
+    """
+    Set story visibility.
+
+    Examples:
+        repr publish abc123
+        repr publish abc123 --visibility friends
+    """
+    from .api import set_story_visibility, AuthError
+
+    if visibility not in ("public", "friends", "private"):
+        print_error(f"Invalid visibility: {visibility}")
+        print_info("Valid options: public, friends, private")
+        raise typer.Exit(1)
+
+    if not is_authenticated():
+        print_error("Not authenticated")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    try:
+        with create_spinner(f"Setting visibility to {visibility}..."):
+            result = asyncio.run(set_story_visibility(story_id, visibility))
+        print_success(f"Story visibility set to {visibility}")
+    except AuthError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(f"API error: {e}")
+        raise typer.Exit(1)
+
+
+@app.command("unpublish")
+def unpublish_story(
+    story_id: str = typer.Argument(..., help="Story ID to unpublish"),
+):
+    """
+    Set story to private.
+
+    Examples:
+        repr unpublish abc123
+    """
+    from .api import set_story_visibility, AuthError
+
+    if not is_authenticated():
+        print_error("Not authenticated")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    try:
+        with create_spinner("Setting story to private..."):
+            result = asyncio.run(set_story_visibility(story_id, "private"))
+        print_success("Story set to private")
+    except AuthError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(f"API error: {e}")
+        raise typer.Exit(1)
+
+
+# =============================================================================
+# FRIENDS
+# =============================================================================
+
+@friends_app.command("add")
+def friends_add(
+    username: str = typer.Argument(..., help="Username to send friend request to"),
+):
+    """Send friend request.
+
+    Example:
+        repr friends add johndoe
+    """
+    if not is_authenticated():
+        print_error("Friend requests require sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import send_friend_request, AuthError
+
+    try:
+        result = asyncio.run(send_friend_request(username))
+        print_success(f"Friend request sent to {username}")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("list")
+def friends_list():
+    """List friends.
+
+    Example:
+        repr friends list
+    """
+    if not is_authenticated():
+        print_error("Friends list requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import get_friends, AuthError
+
+    try:
+        friends = asyncio.run(get_friends())
+
+        if not friends:
+            print_info("No friends yet")
+            return
+
+        table = create_table("Friends", ["Username", "Added"])
+        for friend in friends:
+            username = friend.get("username", "N/A")
+            added_at = friend.get("created_at", "")
+            # Format the date
+            if added_at:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(added_at.replace("Z", "+00:00"))
+                    added_at = dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+            table.add_row(username, added_at or "N/A")
+        console.print(table)
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("requests")
+def friends_requests():
+    """View pending friend requests.
+
+    Example:
+        repr friends requests
+    """
+    if not is_authenticated():
+        print_error("Friend requests require sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import get_friend_requests, AuthError
+
+    try:
+        requests = asyncio.run(get_friend_requests())
+
+        if not requests:
+            print_info("No pending friend requests")
+            return
+
+        table = create_table("Pending Friend Requests", ["Request ID", "From", "Sent"])
+        for req in requests:
+            request_id = req.get("id", "N/A")
+            from_user = req.get("from_username", "N/A")
+            sent_at = req.get("created_at", "")
+            # Format the date
+            if sent_at:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+                    sent_at = dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+            table.add_row(str(request_id), from_user, sent_at or "N/A")
+        console.print(table)
+
+        print_info("Use `repr friends approve <id>` or `repr friends reject <id>`")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("approve")
+def friends_approve(
+    request_id: str = typer.Argument(..., help="ID of the friend request to approve"),
+):
+    """Approve friend request.
+
+    Example:
+        repr friends approve abc123
+    """
+    if not is_authenticated():
+        print_error("Approving friend requests requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import approve_friend_request, AuthError
+
+    try:
+        result = asyncio.run(approve_friend_request(request_id))
+        print_success("Friend request approved")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+
+
+@friends_app.command("reject")
+def friends_reject(
+    request_id: str = typer.Argument(..., help="ID of the friend request to reject"),
+):
+    """Reject friend request.
+
+    Example:
+        repr friends reject abc123
+    """
+    if not is_authenticated():
+        print_error("Rejecting friend requests requires sign-in")
+        print_info("Run `repr login` first")
+        raise typer.Exit(1)
+
+    from .api import reject_friend_request, AuthError
+
+    try:
+        result = asyncio.run(reject_friend_request(request_id))
+        print_info("Friend request rejected")
+    except AuthError as e:
+        print_error(str(e))
+        print_info("Run `repr login` to re-authenticate")
+        raise typer.Exit(1)
+    except APIError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
 
 
 # =============================================================================
@@ -10881,6 +11601,196 @@ def create_pr(
 
     except Exception as e:
         print_error(f"PR creation failed: {e}")
+        raise typer.Exit(1)
+
+
+# ==================== SKILL COMMANDS ====================
+
+# Repr skill content for AI agents
+REPR_SKILL = '''---
+name: repr
+description: Use repr to extract developer context from git history for interviews, reviews, and AI agents
+---
+
+# repr - Developer Context Layer
+
+Use `repr` to capture and surface developer context from git history. Generate stories, prepare for interviews, create performance review material, and provide context to AI agents.
+
+## Quick Start
+
+```bash
+# Initialize (scan repos)
+repr init ~/code
+
+# Generate stories from recent commits
+repr generate --local
+
+# View generated stories
+repr stories
+repr story view <id>
+```
+
+## Common Commands
+
+| Command | Description |
+|---------|-------------|
+| `repr init <path>` | Scan and track repositories |
+| `repr generate --local` | Generate stories using local LLM |
+| `repr generate --days 30` | Generate from last 30 days |
+| `repr stories` | List all stories |
+| `repr story view <id>` | View a specific story |
+| `repr commits --days 7` | Show recent commits |
+| `repr dashboard` | Open web dashboard |
+| `repr mcp serve` | Start MCP server for AI agents |
+
+## Story Generation
+
+```bash
+# Generate with local LLM (Ollama)
+repr generate --local
+
+# Generate from specific timeframe
+repr generate --days 30 --local
+repr generate --since "2 weeks ago" --local
+
+# Generate interview stories (STAR format)
+repr generate --template interview --local
+```
+
+## LLM Configuration
+
+```bash
+# Configure local LLM
+repr llm configure
+
+# Add API keys (stored in OS keychain)
+repr llm add openai
+repr llm add anthropic
+
+# Test LLM connection
+repr llm test
+```
+
+## Use Cases
+
+- **Interview Prep**: Generate STAR-format stories from commits
+- **Performance Reviews**: Summarize months of work with impact
+- **Sprint Demos**: Quick changelogs for stakeholders
+- **AI Context**: MCP server provides work history to Claude/Cursor
+- **Weekly Reflection**: See what you accomplished
+
+## Privacy
+
+- Local-first: data stays in ~/.repr/
+- Air-gapped ready: works fully offline
+- BYOK: use your own API keys
+- Privacy audit: `repr privacy audit`
+'''
+
+
+def _get_skill_path(provider: str) -> Path:
+    """Get the skill installation path for a provider."""
+    home = Path.home()
+    if provider == "claude":
+        return home / ".claude" / "skills" / "repr"
+    elif provider == "gemini":
+        return home / ".gemini" / "skills" / "repr"
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+
+def _is_skill_installed(provider: str) -> bool:
+    """Check if skill is installed for a provider."""
+    skill_path = _get_skill_path(provider) / "SKILL.md"
+    return skill_path.exists()
+
+
+def _install_skill_to(provider: str) -> Path:
+    """Install the repr skill to a provider's skills directory."""
+    skill_dir = _get_skill_path(provider)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(REPR_SKILL)
+    return skill_dir
+
+
+@skill_app.callback(invoke_without_command=True)
+def skill_default(ctx: typer.Context):
+    """View the repr skill for AI agents."""
+    if ctx.invoked_subcommand is None:
+        # Show skill content
+        console.print()
+        console.print(f"[bold {BRAND_PRIMARY}]/repr[/] - [{BRAND_MUTED}]LLM instructions for using repr[/]")
+        console.print()
+
+        # Check installation status
+        claude_installed = _is_skill_installed("claude")
+        gemini_installed = _is_skill_installed("gemini")
+
+        if claude_installed or gemini_installed:
+            console.print(f"[{BRAND_SUCCESS}]Installed:[/]")
+            if claude_installed:
+                console.print(f"  [{BRAND_MUTED}]~/.claude/skills/repr/SKILL.md[/]")
+            if gemini_installed:
+                console.print(f"  [{BRAND_MUTED}]~/.gemini/skills/repr/SKILL.md[/]")
+            console.print()
+
+        console.print(f"[{BRAND_MUTED}]{'─' * 60}[/]")
+        console.print(REPR_SKILL)
+        console.print(f"[{BRAND_MUTED}]{'─' * 60}[/]")
+
+        if not claude_installed and not gemini_installed:
+            console.print(f"\n[{BRAND_MUTED}]Install with:[/] repr skill install")
+        console.print()
+
+
+@skill_app.command("install")
+def skill_install(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="Target provider: claude, gemini, or all (default: all)",
+    ),
+):
+    """Install the repr skill to AI agent providers."""
+    console.print()
+    console.print(f"[bold {BRAND_PRIMARY}]Install repr skill[/]")
+    console.print()
+
+    if not target or target == "all":
+        installed = 0
+
+        # Try Claude
+        try:
+            dest = _install_skill_to("claude")
+            print_success(f"Installed to {dest}")
+            installed += 1
+        except Exception as e:
+            print_warning(f"Could not install to Claude: {e}")
+
+        # Try Gemini
+        try:
+            dest = _install_skill_to("gemini")
+            print_success(f"Installed to {dest}")
+            installed += 1
+        except Exception as e:
+            print_warning(f"Could not install to Gemini: {e}")
+
+        if installed == 0:
+            print_warning("No providers found.")
+        else:
+            console.print(f"\n[{BRAND_MUTED}]LLMs can now use /repr to learn how to run repr commands.[/]\n")
+
+    elif target in ("claude", "gemini"):
+        try:
+            dest = _install_skill_to(target)
+            print_success(f"Installed to {dest}")
+            console.print(f"\n[{BRAND_MUTED}]LLMs can now use /repr to learn how to run repr commands.[/]\n")
+        except Exception as e:
+            print_error(f"Installation failed: {e}")
+            raise typer.Exit(1)
+    else:
+        print_error(f"Unknown target: {target}")
+        console.print(f"[{BRAND_MUTED}]Usage: repr skill install [claude|gemini|all][/]")
         raise typer.Exit(1)
 
 

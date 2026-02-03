@@ -16,6 +16,7 @@ from typing import Callable
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
+from .config import get_or_generate_username
 from .models import (
     CodeSnippet,
     CommitData,
@@ -726,8 +727,13 @@ class StorySynthesizer:
             sorted_shas = sorted(matched_shas)
             story_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"repr-story-{'-'.join(sorted_shas)}"))
 
-            # Extract author from first commit
-            author_name = story_commits[0].author if story_commits else "unknown"
+            # Get author: profile username > GPG-derived mnemonic > git author > unknown
+            if identity := get_or_generate_username():
+                author_name = identity
+            elif story_commits and story_commits[0].author:
+                author_name = story_commits[0].author
+            else:
+                author_name = "unknown"
 
             story = Story(
                 id=story_id,

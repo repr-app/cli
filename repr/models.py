@@ -288,7 +288,7 @@ class Story(BaseModel):
     created_at: datetime
     updated_at: datetime
     project_id: str = Field(default="", description="ID of the project this story belongs to")
-    author_name: str = Field(default="unknown", description="Git author from first commit")
+    author_name: str = Field(default="unknown", description="Claimed username, or git author from first commit")
 
     # 1:M relationships (SHAs/IDs, not full objects)
     commit_shas: list[str] = Field(default_factory=list)
