@@ -91,8 +91,7 @@ class TestStoriesReviewBasic:
     @patch("repr.cli.confirm")
     def test_review_delete_action(self, mock_confirm, mock_prompt, mock_stories):
         """Delete action should remove story."""
-        from repr.cli import stories_review
-        from repr.storage import get_stories_needing_review, list_stories
+        from repr.cli import stories_review, list_stories
 
         # Mock user selecting "delete" and confirming
         mock_prompt.return_value = "d"
@@ -103,7 +102,7 @@ class TestStoriesReviewBasic:
         # Run review
         stories_review()
 
-        # Story count should decrease
+        # Story count should decrease (uses database-backed list_stories)
         final_count = len(list_stories())
         assert final_count == initial_count - 1
 

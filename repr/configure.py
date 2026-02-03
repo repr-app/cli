@@ -116,6 +116,8 @@ def select_with_filter(
         cycle_cursor=True,
         clear_screen=False,
         show_shortcut_hints=False,
+        show_search_hint=False,
+        search_key="/",
         search_highlight_style=("fg_yellow", "bold"),
     )
 
@@ -157,7 +159,7 @@ API_PROVIDERS = {
         "base_url": "https://api.openai.com/v1",
         "models_endpoint": "/models",
         "api_style": "openai",
-        "auth_methods": ["api_key"],  # Could add "oauth" for codex later
+        "auth_methods": ["api_key"],
         "default_model": "gpt-4o-mini",
         "env_var": "OPENAI_API_KEY",
     },
@@ -167,7 +169,7 @@ API_PROVIDERS = {
         "base_url": "https://api.anthropic.com/v1",
         "models_endpoint": "/models",
         "api_style": "anthropic",
-        "auth_methods": ["api_key", "claude_setup"],
+        "auth_methods": ["api_key"],
         "default_model": "claude-sonnet-4-20250514",
         "env_var": "ANTHROPIC_API_KEY",
     },
@@ -317,22 +319,14 @@ def list_anthropic_models(api_key: str) -> list[dict[str, Any]]:
                     "id": model_id,
                     "name": display_name,
                 })
-            # Sort by name, newest first
-            return sorted(models, key=lambda x: x["name"], reverse=True)
+            return models
     except Exception:
         pass
-    # Fallback to known models if API fails
-    return [
-        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
-        {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"},
-        {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet"},
-        {"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku"},
-        {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus"},
-    ]
+    return []
 
 
 def list_gemini_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Gemini models."""
+    """List available Gemini models from API."""
     try:
         resp = httpx.get(
             f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
@@ -347,21 +341,15 @@ def list_gemini_models(api_key: str) -> list[dict[str, Any]]:
                     models.append({
                         "id": name,
                         "name": m.get("displayName", name),
-                        "description": m.get("description", ""),
                     })
             return models
     except Exception:
         pass
-    # Fallback to known models
-    return [
-        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
-        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro"},
-        {"id": "gemini-2.0-flash-exp", "name": "Gemini 2.0 Flash"},
-    ]
+    return []
 
 
 def list_groq_models(api_key: str) -> list[dict[str, Any]]:
-    """List available Groq models."""
+    """List available Groq models from API."""
     try:
         resp = httpx.get(
             "https://api.groq.com/openai/v1/models",
@@ -373,11 +361,7 @@ def list_groq_models(api_key: str) -> list[dict[str, Any]]:
             return [{"id": m["id"], "name": m["id"]} for m in data.get("data", [])]
     except Exception:
         pass
-    return [
-        {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B"},
-        {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B"},
-        {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B"},
-    ]
+    return []
 
 
 def list_provider_models(provider: str, api_key: str | None = None, url: str | None = None) -> list[dict[str, Any]]:
@@ -614,37 +598,16 @@ def _configure_api_llm(selected: dict) -> bool:
     console.print(f"Configuring {info['name']}...")
     console.print()
 
-    # Handle auth methods
-    auth_methods = info.get("auth_methods", ["api_key"])
-
+    # Check environment variable first
+    import os
     api_key = None
+    env_key = os.getenv(info.get("env_var", ""))
+    if env_key:
+        if confirm(f"Use {info['env_var']} from environment?"):
+            api_key = env_key
 
-    if "claude_setup" in auth_methods and provider == "anthropic":
-        auth_options = [
-            "API Key - Enter your Anthropic API key",
-            "Claude Setup Token - Run 'claude setup-token'",
-        ]
-        auth_idx = select_option(auth_options, title="Authentication method:")
-
-        if auth_idx == 1:
-            console.print()
-            console.print("To get your setup token:")
-            console.print("  1. Run 'claude setup-token' in terminal")
-            console.print("  2. Follow the browser prompt to authorize")
-            console.print()
-            api_key = Prompt.ask("Setup token", password=True)
-        else:
-            api_key = Prompt.ask("API Key", password=True)
-    else:
-        # Check environment variable first
-        import os
-        env_key = os.getenv(info.get("env_var", ""))
-        if env_key:
-            if confirm(f"Use {info['env_var']} from environment?"):
-                api_key = env_key
-
-        if not api_key:
-            api_key = Prompt.ask("API Key", password=True)
+    if not api_key:
+        api_key = Prompt.ask("API Key", password=True)
 
     if not api_key:
         print_error("API key required")
@@ -657,7 +620,9 @@ def _configure_api_llm(selected: dict) -> bool:
         models = list_provider_models(provider, api_key=api_key)
 
     if not models:
-        print_warning("Could not fetch models (key may still be valid)")
+        print_error("Could not fetch models - check your API key")
+        if not confirm("Continue with default model?"):
+            return False
         models = [{"id": info["default_model"], "name": info["default_model"]}]
 
     # Select model
