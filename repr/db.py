@@ -13,14 +13,17 @@ from pathlib import Path
 from typing import Optional
 
 from .models import Story, FileChange, CodeSnippet
-from .storage import REPR_HOME, generate_ulid
+from .storage import generate_ulid
 
-
-# Database path
-DB_PATH = REPR_HOME / "stories.db"
 
 # Schema version for migrations
 SCHEMA_VERSION = 7
+
+
+def get_db_path() -> Path:
+    """Get database path (lazy evaluation for testing)."""
+    from .storage import REPR_HOME
+    return REPR_HOME / "stories.db"
 
 
 def _serialize_json_list(items: list) -> str:
@@ -91,7 +94,7 @@ class ReprDatabase:
     """Central SQLite database for repr stories."""
 
     def __init__(self, db_path: Path | None = None):
-        self.db_path = db_path or DB_PATH
+        self.db_path = db_path or get_db_path()
         self._ensure_dir()
 
     def _ensure_dir(self):

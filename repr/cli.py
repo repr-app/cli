@@ -454,10 +454,10 @@ def dashboard(
     """
     import webbrowser
     from .dashboard import run_server
-    from .db import DB_PATH, get_db
+    from .db import get_db_path, get_db
 
     # Check if SQLite database exists and has stories
-    if not DB_PATH.exists():
+    if not get_db_path().exists():
         print_error("No stories database found")
         print_info("Run `repr generate` in a git repository first")
         raise typer.Exit(1)
@@ -3404,9 +3404,9 @@ def data_db_stats():
         repr data db-stats
     """
     from .storage import get_db_stats
-    from .db import DB_PATH
+    from .db import get_db_path
 
-    if not DB_PATH.exists():
+    if not get_db_path().exists():
         print_info("No SQLite database yet.")
         print_info("Run `repr data migrate-db` to create one.")
         return
@@ -3448,13 +3448,15 @@ def data_clear(
         repr data clear           # With confirmation
         repr data clear --force   # Skip confirmation
     """
-    from .db import DB_PATH
+    from .db import get_db_path
     from .storage import STORIES_DIR
     from .config import get_cache_size, clear_cache
     import shutil
 
+    db_path = get_db_path()
+
     # Check what exists
-    db_exists = DB_PATH.exists()
+    db_exists = db_path.exists()
     stories_dir_exists = STORIES_DIR.exists()
     cache_size = get_cache_size()
 
@@ -3474,7 +3476,7 @@ def data_clear(
             story_count = stats.get('story_count', 0)
             db_size = stats.get('db_size_bytes', 0)
         except Exception:
-            db_size = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+            db_size = db_path.stat().st_size if db_path.exists() else 0
 
     if stories_dir_exists:
         stories_file_count = len(list(STORIES_DIR.glob("*")))
@@ -3483,7 +3485,7 @@ def data_clear(
     console.print("[bold red]This will permanently delete:[/]")
     console.print()
     if db_exists:
-        console.print(f"  • Database: {DB_PATH}")
+        console.print(f"  • Database: {db_path}")
         console.print(f"    {story_count} stories, {format_bytes(db_size)}")
     if stories_dir_exists and stories_file_count > 0:
         console.print(f"  • Story files: {STORIES_DIR}")
@@ -3503,9 +3505,9 @@ def data_clear(
     if db_exists:
         try:
             # Also delete WAL and SHM files if they exist
-            DB_PATH.unlink()
-            wal_path = DB_PATH.with_suffix(".db-wal")
-            shm_path = DB_PATH.with_suffix(".db-shm")
+            db_path.unlink()
+            wal_path = db_path.with_suffix(".db-wal")
+            shm_path = db_path.with_suffix(".db-shm")
             if wal_path.exists():
                 wal_path.unlink()
             if shm_path.exists():
