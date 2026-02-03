@@ -353,14 +353,13 @@ function renderStoryCard(s, searchQuery, options = {}) {
   const category = s.category || 'chore';
   const repoName = s.repo_name || 'cli';
   let username = s.author_name || s.username || 'unknown';
+  let authorEmail = s.author_email || '';
   const isVerified = s.verified || false;
 
   const displayTitle = highlightText(cleanTitle(s.title), searchQuery);
   const displayProblem = s.problem ? highlightText(s.problem, searchQuery) : '';
   const displayApproach = s.approach ? highlightText(s.approach, searchQuery) : '';
 
-  let avatarColor = stringToColor(username);
-  let avatarLetter = username.substring(0, 1).toUpperCase();
   let displayUsername = highlightText(username, searchQuery);
   let handleText = `@${repoName}`;
   const verifiedBadge = isVerified ? '<span class="verified-badge" title="GPG signed commits">✓</span>' : '';
@@ -369,15 +368,14 @@ function renderStoryCard(s, searchQuery, options = {}) {
 
   // Override for profile view (Repository as Author)
   if (options.useRepoAsAuthor) {
-    username = repoName; // The author is the repo
-    displayUsername = repoName;
-    avatarColor = stringToColor(repoName);
-    avatarLetter = repoName.substring(0, 1).toUpperCase();
-    handleText = `@${repoName}`;
-
     // Original author credit
     const originalAuthor = s.author_name || s.username || 'unknown';
     contributionNote = `<div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;"> <span style="opacity:0.7">Contributed by</span> <span style="font-weight:500">${escapeHtml(originalAuthor)}</span></div>`;
+
+    username = repoName; // The author is the repo
+    displayUsername = repoName;
+    authorEmail = ''; // No Gravatar for repo
+    handleText = `@${repoName}`;
   }
 
   // Tags as hashtags (clickable to filter)
@@ -399,9 +397,12 @@ function renderStoryCard(s, searchQuery, options = {}) {
     mediaHtml += `<div class="post-media"><pre class="post-output">${escapeHtml(s.show)}</pre></div>`;
   }
 
+  // Generate avatar HTML (Gravatar or fallback)
+  const avatarHtml = renderAvatar(username, authorEmail, 40, 'clickable');
+
   return `
     <article class="post-card" id="post-${s.id}" onclick="openStory(event, '${s.id}')">
-      <div class="post-avatar" style="background:${avatarColor}; cursor: pointer;" onclick="openProfile(event, '${repoName}')">${avatarLetter}</div>
+      <div onclick="openProfile(event, '${repoName}')" style="cursor:pointer;">${avatarHtml}</div>
       <div class="post-body">
         ${options.useRepoAsAuthor ? contributionNote : ''}
         <div class="post-header">
@@ -483,6 +484,7 @@ function openStory(event, storyId, pushState = true) {
   const category = story.category || 'update';
   const repoName = story.repo_name || 'cli';
   const username = story.author_name || story.username || 'unknown';
+  const authorEmail = story.author_email || '';
   const isVerified = story.verified || false;
   const displayTitle = cleanTitle(story.title);
 
@@ -535,13 +537,13 @@ function openStory(event, storyId, pushState = true) {
     }).join('')}
      </ul>` : '';
 
-  const avatarColor = stringToColor(username);
-  const avatarLetter = username.substring(0, 2).toUpperCase();
+  // Generate avatar HTML (Gravatar or fallback)
+  const detailAvatarHtml = renderAvatar(username, authorEmail, 48, 'clickable');
 
   contentEl.innerHTML = `
     <div class="post-detail">
         <div class="post-detail-header">
-          <div class="post-avatar" style="background:${avatarColor}; width: 48px; height: 48px; font-size: 18px;" onclick="openProfile(event, '${repoName}')">${avatarLetter}</div>
+          <div onclick="openProfile(event, '${repoName}')" style="cursor:pointer;">${detailAvatarHtml}</div>
           <div class="post-detail-author-info">
             <div class="post-author" onclick="openProfile(event, '${repoName}')" style="font-size: 16px;">${escapeHtml(username)}${verifiedBadge}</div>
             <div class="post-handle" onclick="openProfile(event, '${repoName}')" style="font-size: 15px;">@${repoName} · ${timeStr}</div>

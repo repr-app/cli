@@ -189,6 +189,7 @@ class CommitData:
     files: list[str]
     insertions: int = 0
     deletions: int = 0
+    author_email: str = ""
     
     def __post_init__(self):
         if isinstance(self.timestamp, str):
@@ -289,6 +290,7 @@ class Story(BaseModel):
     updated_at: datetime
     project_id: str = Field(default="", description="ID of the project this story belongs to")
     author_name: str = Field(default="unknown", description="Claimed username, or git author from first commit")
+    author_email: str = Field(default="", description="Git author email for Gravatar")
 
     # 1:M relationships (SHAs/IDs, not full objects)
     commit_shas: list[str] = Field(default_factory=list)
