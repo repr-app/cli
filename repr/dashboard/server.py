@@ -1,5 +1,9 @@
 """
 HTTP server for repr story dashboard.
+
+Serves the Vue dashboard from either:
+1. User-installed dashboard (~/.repr/dashboard/) - downloaded from GitHub
+2. Bundled dashboard (repr/dashboard/dist/) - ships with CLI
 """
 
 import http.server
@@ -8,43 +12,20 @@ import mimetypes
 import socketserver
 from pathlib import Path
 
-# Static directory configuration - same as where server.py lives
-_STATIC_DIR = Path(__file__).parent
+from .manager import get_dashboard_path, check_for_updates
+
+# Dashboard directory - resolved at runtime
+_dashboard_dir: Path | None = None
 
 
-def _needs_rebuild() -> bool:
-    """Check if source files are newer than the built index.html."""
-    output = _STATIC_DIR / "index.html"
-    src_dir = _STATIC_DIR / "src"
-
-    if not output.exists():
-        return True
-
-    if not src_dir.exists():
-        return False
-
-    output_mtime = output.stat().st_mtime
-
-    # Check all source files
-    for pattern in ["**/*.html", "**/*.css", "**/*.js"]:
-        for src_file in src_dir.glob(pattern):
-            if src_file.stat().st_mtime > output_mtime:
-                return True
-
-    return False
-
-
-def _rebuild_if_needed() -> None:
-    """Rebuild dashboard if source files have changed."""
-    if not _needs_rebuild():
-        return
-
-    try:
-        from .build import build
-        print("  [auto-rebuild] Source files changed, rebuilding...")
-        build()
-    except Exception as e:
-        print(f"  [auto-rebuild] Warning: rebuild failed: {e}")
+def _get_dashboard_dir() -> Path:
+    """Get the dashboard directory, caching the result."""
+    global _dashboard_dir
+    if _dashboard_dir is None:
+        _dashboard_dir = get_dashboard_path()
+        if _dashboard_dir is None:
+            raise RuntimeError("No dashboard available")
+    return _dashboard_dir
 
 
 def _get_stories_from_db() -> list[dict]:
@@ -292,50 +273,50 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def serve_dashboard(self):
-        # Auto-rebuild if source files changed
-        _rebuild_if_needed()
+        try:
+            dashboard_dir = _get_dashboard_dir()
+            index_path = dashboard_dir / "index.html"
 
-        index_path = _STATIC_DIR / "index.html"
-
-        if index_path.exists():
-            try:
+            if index_path.exists():
                 content = index_path.read_text(encoding="utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", len(content.encode("utf-8")))
                 self.end_headers()
                 self.wfile.write(content.encode("utf-8"))
-            except Exception as e:
-                self.send_error(500, str(e))
-        else:
-            self.send_error(404, f"Dashboard index.html not found at {index_path}")
+            else:
+                self.send_error(404, f"Dashboard index.html not found at {index_path}")
+        except Exception as e:
+            self.send_error(500, str(e))
 
     def serve_static(self):
-        """Serve static files from current directory."""
-        clean_path = self.path.lstrip("/")
-        file_path = (_STATIC_DIR / clean_path).resolve()
-
-        # Security check: ensure path is within static dir and NOT a python file
-        if not str(file_path).startswith(str(_STATIC_DIR.resolve())):
-            self.send_error(403, "Access denied")
-            return
-
-        if file_path.suffix == ".py" or file_path.name.startswith("."):
-            self.send_error(403, "Access denied")
-            return
-
-        if not file_path.exists() or not file_path.is_file():
-            self.send_error(404, "File not found")
-            return
-
-        content_type, _ = mimetypes.guess_type(file_path)
-        content_type = content_type or "application/octet-stream"
-
+        """Serve static files from dashboard directory."""
         try:
+            dashboard_dir = _get_dashboard_dir()
+            clean_path = self.path.lstrip("/")
+            file_path = (dashboard_dir / clean_path).resolve()
+
+            # Security check: ensure path is within dashboard dir
+            if not str(file_path).startswith(str(dashboard_dir.resolve())):
+                self.send_error(403, "Access denied")
+                return
+
+            # Block sensitive files
+            if file_path.suffix == ".py" or file_path.name.startswith("."):
+                self.send_error(403, "Access denied")
+                return
+
+            if not file_path.exists() or not file_path.is_file():
+                self.send_error(404, "File not found")
+                return
+
+            content_type, _ = mimetypes.guess_type(file_path)
+            content_type = content_type or "application/octet-stream"
+
             content = file_path.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", "max-age=31536000, immutable")  # Cache static assets
             self.send_header("Content-Length", len(content))
             self.end_headers()
             self.wfile.write(content)
@@ -593,8 +574,28 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(500, str(e))
 
 
-def run_server(port: int, host: str) -> None:
-    """Start the dashboard HTTP server."""
+def run_server(port: int, host: str, skip_update_check: bool = False) -> None:
+    """
+    Start the dashboard HTTP server.
+
+    Args:
+        port: Port to listen on
+        host: Host to bind to
+        skip_update_check: If True, skip checking for dashboard updates
+    """
+    global _dashboard_dir
+
+    # Check for updates (non-blocking, best-effort)
+    if not skip_update_check:
+        try:
+            check_for_updates(quiet=True)
+        except Exception:
+            pass  # Don't fail startup if update check fails
+
+    # Ensure dashboard is available
+    from .manager import ensure_dashboard
+    #_dashboard_dir = ensure_dashboard()
+
     handler = TimelineHandler
     with socketserver.TCPServer((host, port), handler) as server:
         try:

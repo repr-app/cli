@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Utils Tests</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    h1 {
+      color: #333;
+    }
+    .test-suite {
+      margin: 20px 0;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #f9f9f9;
+    }
+    .test-case {
+      margin: 10px 0;
+      padding: 10px;
+      border-left: 4px solid #ccc;
+      background: white;
+    }
+    .test-case.pass {
+      border-left-color: #16a34a;
+    }
+    .test-case.fail {
+      border-left-color: #dc2626;
+    }
+    .test-name {
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    .test-result {
+      font-size: 14px;
+      color: #666;
+    }
+    .summary {
+      margin-top: 30px;
+      padding: 20px;
+      background: #f0f0f0;
+      border-radius: 8px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .summary.pass {
+      background: #dcfce7;
+      color: #15803d;
+    }
+    .summary.fail {
+      background: #fde8e8;
+      color: #b91c1c;
+    }
+  </style>
+</head>
+<body>
+  <h1>Utility Functions Tests</h1>
+  <div id="test-container"></div>
+  <div id="summary"></div>
+
+  <!-- Load utils module -->
+  <script src="../src/scripts/utils.js"></script>
+
+  <!-- Test Framework -->
+  <script>
+    class TestRunner {
+      constructor() {
+        this.results = [];
+      }
+
+      test(name, fn) {
+        try {
+          fn();
+          this.results.push({ name, pass: true });
+        } catch (error) {
+          this.results.push({ name, pass: false, error: error.message });
+        }
+      }
+
+      assert(condition, message) {
+        if (!condition) {
+          throw new Error(message || 'Assertion failed');
+        }
+      }
+
+      assertEqual(actual, expected, message) {
+        if (actual !== expected) {
+          throw new Error(message || `Expected "${expected}" but got "${actual}"`);
+        }
+      }
+
+      assertIncludes(str, substring, message) {
+        if (!str.includes(substring)) {
+          throw new Error(message || `Expected "${str}" to include "${substring}"`);
+        }
+      }
+
+      render() {
+        const container = document.getElementById('test-container');
+        const summary = document.getElementById('summary');
+
+        const passed = this.results.filter(r => r.pass).length;
+        const failed = this.results.filter(r => !r.pass).length;
+        const total = this.results.length;
+
+        container.innerHTML = `
+          <div class="test-suite">
+            <h2>Test Results</h2>
+            ${this.results.map(result => `
+              <div class="test-case ${result.pass ? 'pass' : 'fail'}">
+                <div class="test-name">${result.pass ? '✓' : '✗'} ${result.name}</div>
+                ${result.error ? `<div class="test-result">Error: ${result.error}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        `;
+
+        summary.innerHTML = `
+          <div class="summary ${failed === 0 ? 'pass' : 'fail'}">
+            ${failed === 0 ? '✓' : '✗'} ${passed}/${total} tests passed
+            ${failed > 0 ? ` · ${failed} failed` : ''}
+          </div>
+        `;
+      }
+    }
+
+    // Run tests
+    const runner = new TestRunner();
+
+    // stringToColor tests
+    runner.test('stringToColor returns HSL color', () => {
+      const color = stringToColor('test');
+      runner.assertIncludes(color, 'hsl(');
+      runner.assertIncludes(color, '70%');
+      runner.assertIncludes(color, '45%');
+    });
+
+    runner.test('stringToColor is consistent', () => {
+      const color1 = stringToColor('cli');
+      const color2 = stringToColor('cli');
+      runner.assertEqual(color1, color2);
+    });
+
+    runner.test('stringToColor produces different colors for different strings', () => {
+      const color1 = stringToColor('cli');
+      const color2 = stringToColor('repr');
+      runner.assert(color1 !== color2, 'Colors should be different');
+    });
+
+    // cleanTitle tests
+    runner.test('cleanTitle removes feat prefix', () => {
+      const result = cleanTitle('feat: add new feature');
+      runner.assertEqual(result, 'Add new feature');
+    });
+
+    runner.test('cleanTitle removes chore prefix', () => {
+      const result = cleanTitle('chore: update dependencies');
+      runner.assertEqual(result, 'Update dependencies');
+    });
+
+    runner.test('cleanTitle removes fix prefix', () => {
+      const result = cleanTitle('fix: resolve bug');
+      runner.assertEqual(result, 'Resolve bug');
+    });
+
+    runner.test('cleanTitle removes scope', () => {
+      const result = cleanTitle('feat(api): add endpoint');
+      runner.assertEqual(result, 'Add endpoint');
+    });
+
+    runner.test('cleanTitle handles breaking changes', () => {
+      const result = cleanTitle('feat!: breaking change');
+      runner.assertEqual(result, 'Breaking change');
+    });
+
+    runner.test('cleanTitle capitalizes first letter', () => {
+      const result = cleanTitle('update readme');
+      runner.assertEqual(result, 'Update readme');
+    });
+
+    runner.test('cleanTitle handles empty string', () => {
+      const result = cleanTitle('');
+      runner.assertEqual(result, '');
+    });
+
+    runner.test('cleanTitle handles null', () => {
+      const result = cleanTitle(null);
+      runner.assertEqual(result, '');
+    });
+
+    // escapeHtml tests
+    runner.test('escapeHtml escapes HTML entities', () => {
+      const result = escapeHtml('<script>alert("xss")</script>');
+      runner.assertIncludes(result, '&lt;script&gt;');
+      runner.assertIncludes(result, '&lt;/script&gt;');
+    });
+
+    runner.test('escapeHtml escapes ampersands', () => {
+      const result = escapeHtml('A & B');
+      runner.assertIncludes(result, '&amp;');
+    });
+
+    runner.test('escapeHtml escapes quotes', () => {
+      const result = escapeHtml('"quoted"');
+      runner.assertIncludes(result, '&quot;');
+    });
+
+    runner.test('escapeHtml handles empty string', () => {
+      const result = escapeHtml('');
+      runner.assertEqual(result, '');
+    });
+
+    runner.test('escapeHtml handles null', () => {
+      const result = escapeHtml(null);
+      runner.assertEqual(result, '');
+    });
+
+    // highlightText tests
+    runner.test('highlightText highlights matching text', () => {
+      const result = highlightText('hello world', 'world');
+      runner.assertIncludes(result, '<span class="highlight">world</span>');
+    });
+
+    runner.test('highlightText is case insensitive', () => {
+      const result = highlightText('Hello World', 'world');
+      runner.assertIncludes(result, '<span class="highlight">World</span>');
+    });
+
+    runner.test('highlightText escapes HTML in input', () => {
+      const result = highlightText('<script>test</script>', 'test');
+      runner.assertIncludes(result, '&lt;script&gt;');
+    });
+
+    runner.test('highlightText handles empty query', () => {
+      const result = highlightText('hello world', '');
+      runner.assert(!result.includes('<span class="highlight">'));
+    });
+
+    runner.test('highlightText handles null query', () => {
+      const result = highlightText('hello world', null);
+      runner.assert(!result.includes('<span class="highlight">'));
+    });
+
+    // timeSince tests
+    runner.test('timeSince shows "Just now" for recent time', () => {
+      const now = new Date();
+      const result = timeSince(now);
+      runner.assertEqual(result, 'Just now');
+    });
+
+    runner.test('timeSince shows minutes', () => {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+      const result = timeSince(fiveMinutesAgo);
+      runner.assertEqual(result, '5m');
+    });
+
+    runner.test('timeSince shows hours', () => {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      const result = timeSince(twoHoursAgo);
+      runner.assertEqual(result, '2h');
+    });
+
+    runner.test('timeSince shows days', () => {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      const result = timeSince(threeDaysAgo);
+      runner.assertEqual(result, '3d');
+    });
+
+    // Render results
+    runner.render();
+  </script>
+</body>
+</html>

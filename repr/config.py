@@ -2,8 +2,10 @@
 Configuration management for ~/.repr/ directory.
 """
 
+import hashlib
 import json
 import os
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -623,12 +625,98 @@ def set_profile_config(**kwargs) -> None:
     config = load_config()
     if "profile" not in config:
         config["profile"] = DEFAULT_CONFIG["profile"].copy()
-    
+
     for key, value in kwargs.items():
         if key in DEFAULT_CONFIG["profile"]:
             config["profile"][key] = value
-    
+
     save_config(config)
+
+
+# Word lists for mnemonic username generation
+_ADJECTIVES = [
+    "swift", "brave", "calm", "keen", "bold", "wise", "warm", "cool",
+    "bright", "quiet", "noble", "vivid", "lucid", "agile", "witty",
+    "gentle", "steady", "clever", "humble", "serene", "cosmic", "lunar",
+    "stellar", "golden", "silver", "crystal", "amber", "azure", "coral",
+    "crimson", "emerald", "ivory", "jade", "onyx", "pearl", "ruby",
+]
+
+_NOUNS = [
+    "falcon", "wolf", "bear", "hawk", "tiger", "lion", "eagle", "raven",
+    "phoenix", "dragon", "panther", "cobra", "viper", "lynx", "fox",
+    "mountain", "river", "ocean", "forest", "desert", "glacier", "canyon",
+    "meadow", "valley", "summit", "thunder", "storm", "aurora", "comet",
+    "nebula", "quasar", "pulsar", "nova", "orbit", "zenith", "vertex",
+]
+
+
+def get_gpg_fingerprint() -> str | None:
+    """Get the GPG signing key fingerprint from git config."""
+    try:
+        # First check if git has a signing key configured
+        result = subprocess.run(
+            ["git", "config", "--get", "user.signingkey"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        key_id = result.stdout.strip()
+
+        # Get the full fingerprint from GPG
+        result = subprocess.run(
+            ["gpg", "--fingerprint", "--with-colons", key_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+
+        # Parse the fingerprint from colon-delimited output
+        for line in result.stdout.split("\n"):
+            if line.startswith("fpr:"):
+                return line.split(":")[9]
+
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return None
+
+
+def derive_mnemonic_from_key(fingerprint: str) -> str:
+    """Derive a deterministic human-friendly name from a key fingerprint."""
+    # Hash the fingerprint to get consistent bytes
+    hash_bytes = hashlib.sha256(fingerprint.encode()).digest()
+
+    # Use first bytes to select adjective and noun
+    adj_idx = hash_bytes[0] % len(_ADJECTIVES)
+    noun_idx = hash_bytes[1] % len(_NOUNS)
+
+    return f"{_ADJECTIVES[adj_idx]}-{_NOUNS[noun_idx]}"
+
+
+def get_or_generate_username() -> str:
+    """
+    Get username with fallback chain:
+    1. Profile username (claimed or set)
+    2. GPG-derived mnemonic (deterministic from signing key)
+    3. None (caller should use git author or other fallback)
+    """
+    profile = get_profile_config()
+
+    # 1. Check for set username
+    if username := profile.get("username"):
+        return username
+
+    # 2. Try to derive from GPG key
+    if fingerprint := get_gpg_fingerprint():
+        return derive_mnemonic_from_key(fingerprint)
+
+    # 3. No deterministic identity available
+    return None
 
 
 def get_skip_patterns() -> list[str]:

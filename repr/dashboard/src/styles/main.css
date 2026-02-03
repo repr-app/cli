@@ -1,0 +1,370 @@
+:root {
+  /* Substack-inspired warm palette - Light (default) */
+  --bg: #f9f7f4;
+  --surface: #ffffff;
+  --surface-hover: #f8fafc;
+  --surface-card: #ffffff;
+  --border: #eaecf0;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --accent: #FF5A1F;
+  /* Substack Orange-ish */
+  --accent-hover: #e04f1a;
+  --green: #16a34a;
+  --red: #dc2626;
+  --font-mono: 'JetBrains Mono', 'Monaco', monospace;
+  --font-serif: 'Spectral', 'Georgia', serif;
+}
+
+/* Dark theme */
+[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-hover: #21262d;
+  --surface-card: #0d1117;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #ff7a33;
+  --accent-hover: #ff8f52;
+  --green: #3fb950;
+  --red: #f85149;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+/* Dashboard Layout */
+.dashboard {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Main Content */
+.main-content {
+  flex: 1;
+  margin-left: 240px;
+  min-height: 100vh;
+  background: var(--bg);
+  transition: margin-left 0.3s ease;
+}
+
+.content-header {
+  padding: 28px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+
+.mobile-menu-toggle {
+  display: none;
+  font-size: 24px;
+  cursor: pointer;
+  margin-bottom: 12px;
+  width: fit-content;
+}
+
+.content-header h1 {
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.content-header-subtitle {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.content-body {
+  padding: 0;
+}
+
+/* Legacy container for detail view */
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: #fff;
+}
+
+/* Feed container */
+.feed-container {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+/* Settings container */
+.settings-container {
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.loading-text {
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 20px;
+  text-align: center;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+}
+
+.empty-state-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.post {
+  padding: 28px 24px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--surface);
+  animation: fadeIn 0.4s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Detail View Overlay */
+#view-detail {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 200;
+  background: var(--bg);
+  display: none;
+}
+
+#view-detail.open {
+  display: flex;
+}
+
+#view-detail .sidebar {
+  position: relative;
+  height: 100%;
+}
+
+#view-detail .main-content {
+  margin-left: 0;
+}
+
+.mobile-nav {
+  display: none;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .main-content {
+    margin-left: 0 !important;
+  }
+
+  .content-header {
+    padding: 16px 20px;
+  }
+
+  .date-header {
+    padding: 16px 20px 8px;
+  }
+
+  .date-header::before {
+    left: 20px;
+    right: 20px;
+  }
+
+  .mobile-menu-toggle {
+    display: block;
+  }
+
+  .feed-container,
+  .settings-container {
+    padding: 0 10px;
+  }
+
+  .feed-wrapper {
+    border-left: none;
+    border-right: none;
+  }
+
+  .post-card {
+    padding: 12px 16px;
+  }
+
+  .post-avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 14px;
+  }
+
+  .post-text {
+    font-size: 15px;
+  }
+
+  .post-actions {
+    max-width: 100%;
+  }
+
+  .date-header {
+    padding: 10px 16px;
+    top: 0;
+  }
+
+  .tabs-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 10px 16px;
+    gap: 12px;
+  }
+
+  .search-container {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .search-input {
+    flex: 1;
+    width: 100% !important;
+  }
+
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 90;
+  }
+
+  .sidebar-overlay.open {
+    display: block;
+  }
+
+  .mobile-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 64px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 100;
+    justify-content: space-around;
+    align-items: center;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .mobile-nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .mobile-nav-item.active {
+    color: var(--accent);
+  }
+
+  .mobile-nav-item span:first-child {
+    font-size: 20px;
+  }
+
+  body {
+    padding-bottom: 64px;
+    /* Space for mobile nav */
+  }
+}
+
+/* Touch targets */
+.btn,
+.sidebar-item,
+.repo-tab,
+.repo-action-btn {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+/* Date Headers */
+.date-header {
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 56px;
+  z-index: 40;
+  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="dark"] .date-header {
+  background: rgba(22, 27, 34, 0.85);
+}
+
+.date-header-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}

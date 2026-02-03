@@ -537,8 +537,9 @@ class ReprDatabase:
                     implementation_details, decisions, lessons,
                     hook, what, value, insight, show, diagram, post_body,
                     public_post, public_show, internal_post, internal_show, internal_details,
-                    file_changes, key_snippets, total_insertions, total_deletions
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_changes, key_snippets, total_insertions, total_deletions,
+                    author_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     title=excluded.title,
@@ -569,7 +570,8 @@ class ReprDatabase:
                     file_changes=excluded.file_changes,
                     key_snippets=excluded.key_snippets,
                     total_insertions=excluded.total_insertions,
-                    total_deletions=excluded.total_deletions
+                    total_deletions=excluded.total_deletions,
+                    author_name=excluded.author_name
                 """,
                 (
                     story.id,
@@ -605,6 +607,7 @@ class ReprDatabase:
                     _serialize_json(story.key_snippets),
                     story.total_insertions,
                     story.total_deletions,
+                    story.author_name,
                 )
             )
 
@@ -700,6 +703,7 @@ class ReprDatabase:
             key_snippets=_deserialize_key_snippets(_get("key_snippets", "[]")),
             total_insertions=int(_get("total_insertions", 0) or 0),
             total_deletions=int(_get("total_deletions", 0) or 0),
+            author_name=_get("author_name", "unknown"),
         )
 
     def get_story(self, story_id: str) -> Story | None:
