@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from rich.prompt import Prompt
 from rich.table import Table
+from simple_term_menu import TerminalMenu
 
 from .config import (
     CONFIG_FILE,
@@ -42,6 +43,86 @@ from .ui import (
     BRAND_PRIMARY,
     BRAND_MUTED,
 )
+
+
+# =============================================================================
+# MENU HELPERS
+# =============================================================================
+
+def select_option(options: list[str], title: str = "", default_index: int = 0) -> int | None:
+    """
+    Show an arrow-key navigable menu and return selected index.
+
+    Args:
+        options: List of option strings to display
+        title: Optional title above the menu
+        default_index: Index to highlight initially
+
+    Returns:
+        Selected index, or None if cancelled (Esc/q)
+    """
+    menu = TerminalMenu(
+        options,
+        title=title if title else None,
+        cursor_index=default_index,
+        menu_cursor="→ ",
+        menu_cursor_style=("fg_cyan", "bold"),
+        menu_highlight_style=("fg_cyan", "bold"),
+        cycle_cursor=True,
+        clear_screen=False,
+    )
+    index = menu.show()
+    return index
+
+
+def select_with_filter(
+    options: list[dict[str, Any]],
+    title: str = "",
+    default_id: str | None = None,
+) -> dict[str, Any] | None:
+    """
+    Show a filterable menu for model/item selection.
+
+    Args:
+        options: List of dicts with 'id' and 'name' keys
+        title: Optional title
+        default_id: ID to highlight initially
+
+    Returns:
+        Selected option dict, or None if cancelled
+    """
+    if not options:
+        return None
+
+    # Build display strings
+    display = [f"{opt.get('name', opt['id'])}" for opt in options]
+
+    # Find default index
+    default_index = 0
+    if default_id:
+        for i, opt in enumerate(options):
+            if opt["id"] == default_id:
+                default_index = i
+                break
+
+    menu = TerminalMenu(
+        display,
+        title=title if title else None,
+        cursor_index=default_index,
+        menu_cursor="→ ",
+        menu_cursor_style=("fg_cyan", "bold"),
+        menu_highlight_style=("fg_cyan", "bold"),
+        cycle_cursor=True,
+        clear_screen=False,
+        search_key=None,  # Disable default search
+        show_search_hint=True,
+        search_highlight_style=("fg_yellow", "bold"),
+    )
+
+    index = menu.show()
+    if index is None:
+        return None
+    return options[index]
 
 
 # =============================================================================
@@ -313,7 +394,7 @@ def list_provider_models(provider: str, api_key: str | None = None, url: str | N
 
 def select_model(models: list[dict[str, Any]], default: str | None = None) -> str | None:
     """
-    Interactive model selection with filtering.
+    Interactive model selection with arrow keys.
 
     Args:
         models: List of model dicts with 'id' and 'name' keys
@@ -325,73 +406,30 @@ def select_model(models: list[dict[str, Any]], default: str | None = None) -> st
     if not models:
         return Prompt.ask("Model name", default=default or "")
 
+    # Find default index
+    default_index = 0
+    if default:
+        for i, m in enumerate(models):
+            if m["id"] == default:
+                default_index = i
+                break
+
+    # Build display strings
+    display = []
+    for m in models:
+        name = m.get("name", m["id"])
+        if m["id"] == default:
+            display.append(f"{name} (default)")
+        else:
+            display.append(name)
+
     console.print()
-    console.print("[bold]Available models:[/]")
-    console.print(f"[{BRAND_MUTED}]Type to filter, or enter number to select[/]")
-    console.print()
+    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select, / to search[/]")
 
-    # Show models with numbers
-    filtered = models
-    filter_text = ""
-
-    while True:
-        # Display filtered list (max 15)
-        display_models = filtered[:15]
-        for i, model in enumerate(display_models, 1):
-            name = model.get("name", model["id"])
-            model_id = model["id"]
-            if default and model_id == default:
-                console.print(f"  [bold green]{i:2}.[/] {name} [dim](default)[/]")
-            else:
-                console.print(f"  [bold]{i:2}.[/] {name}")
-
-        if len(filtered) > 15:
-            console.print(f"  [{BRAND_MUTED}]... and {len(filtered) - 15} more (type to filter)[/]")
-
-        console.print()
-
-        # Get input
-        prompt_text = "Select"
-        if filter_text:
-            prompt_text = f"Filter: {filter_text} | Select"
-
-        choice = Prompt.ask(prompt_text, default="1" if default else "")
-
-        # Handle backspace/clear filter
-        if choice == "" and filter_text:
-            filter_text = ""
-            filtered = models
-            console.print("\033[F" * (len(display_models) + 4))  # Move cursor up
-            continue
-
-        # Try as number
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(display_models):
-                return display_models[idx]["id"]
-        except ValueError:
-            pass
-
-        # Try as filter text
-        if choice:
-            filter_text = choice.lower()
-            filtered = [m for m in models if filter_text in m.get("name", "").lower() or filter_text in m["id"].lower()]
-            if len(filtered) == 1:
-                return filtered[0]["id"]
-            elif len(filtered) == 0:
-                print_warning("No models match filter")
-                filter_text = ""
-                filtered = models
-            else:
-                # Clear and redraw
-                console.print("\033[F" * (len(display_models) + 4))  # Move cursor up
-                continue
-
-        # If just enter with default, use default
-        if choice == "" and default:
-            return default
-
-    return None
+    selected = select_with_filter(models, title="Select model:", default_id=default)
+    if selected:
+        return selected["id"]
+    return default
 
 
 # =============================================================================
@@ -449,37 +487,25 @@ def wizard_llm() -> bool:
             "description": info["description"],
         })
 
-    # Display options
-    console.print("Select your LLM provider:")
-    console.print()
-
-    for i, opt in enumerate(options, 1):
+    # Build menu display strings
+    menu_items = []
+    for opt in options:
         name = opt["name"]
         desc = opt["description"]
         if opt["type"] == "local":
-            console.print(f"  [bold green]{i:2}.[/] {name}")
-            console.print(f"      [{BRAND_MUTED}]{desc}[/]")
-        elif opt["type"] == "local_manual":
-            console.print(f"  [bold]{i:2}.[/] {name}")
-            console.print(f"      [{BRAND_MUTED}]{desc}[/]")
+            menu_items.append(f"● {name} - {desc}")
         else:
-            console.print(f"  [bold]{i:2}.[/] {name}")
-            console.print(f"      [{BRAND_MUTED}]{desc}[/]")
+            menu_items.append(f"  {name} - {desc}")
 
+    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select[/]")
     console.print()
 
-    # Get selection
-    choice = Prompt.ask("Choose", default="1")
-    try:
-        idx = int(choice) - 1
-        if idx < 0 or idx >= len(options):
-            print_error("Invalid selection")
-            return False
-        selected = options[idx]
-    except ValueError:
-        print_error("Invalid selection")
+    # Show menu
+    idx = select_option(menu_items, title="Select LLM provider:")
+    if idx is None:
         return False
 
+    selected = options[idx]
     console.print()
 
     # Configure based on type
@@ -573,14 +599,13 @@ def _configure_api_llm(selected: dict) -> bool:
     api_key = None
 
     if "claude_setup" in auth_methods and provider == "anthropic":
-        console.print("Authentication options:")
-        console.print("  [bold]1.[/] API Key - Enter your Anthropic API key")
-        console.print("  [bold]2.[/] Claude Setup Token - From claude.ai/account")
-        console.print()
+        auth_options = [
+            "API Key - Enter your Anthropic API key",
+            "Claude Setup Token - Run 'claude setup-token'",
+        ]
+        auth_idx = select_option(auth_options, title="Authentication method:")
 
-        auth_choice = Prompt.ask("Choose", choices=["1", "2"], default="1")
-
-        if auth_choice == "2":
+        if auth_idx == 1:
             console.print()
             console.print("To get your setup token:")
             console.print("  1. Run 'claude setup-token' in terminal")
@@ -725,24 +750,23 @@ def wizard_schedule() -> bool:
     console.print("─" * 40)
     console.print()
 
-    console.print("How should repr generate stories from your commits?")
-    console.print()
-    console.print("  [bold]1.[/] Scheduled (recommended) - Every 4 hours via cron")
-    console.print(f"     [{BRAND_MUTED}]Predictable, batches work, never interrupts[/]")
-    console.print()
-    console.print("  [bold]2.[/] On commit - After every 5 commits via git hook")
-    console.print(f"     [{BRAND_MUTED}]Real-time, but needs LLM running during commits[/]")
-    console.print()
-    console.print("  [bold]3.[/] Manual only - Run `repr generate` yourself")
-    console.print(f"     [{BRAND_MUTED}]Full control, no automation[/]")
+    schedule_options = [
+        "Scheduled (recommended) - Every 4 hours via cron",
+        "On commit - After every 5 commits via git hook",
+        "Manual only - Run `repr generate` yourself",
+    ]
+
+    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select[/]")
     console.print()
 
-    choice = Prompt.ask("Choose", choices=["1", "2", "3"], default="1")
+    choice = select_option(schedule_options, title="How should repr generate stories?")
+    if choice is None:
+        choice = 0  # Default to scheduled
 
     tracked = get_tracked_repos()
     config = load_config()
 
-    if choice == "1":
+    if choice == 0:
         # Scheduled via cron
         result = install_cron(interval_hours=4, min_commits=3)
         if result["success"]:
@@ -760,7 +784,7 @@ def wizard_schedule() -> bool:
             print_warning(f"Could not install cron: {result['message']}")
             print_info("You can set it up later with `repr cron install`")
 
-    elif choice == "2":
+    elif choice == 1:
         # On-commit via hooks
         config["generation"]["auto_generate_on_hook"] = True
         save_config(config)
@@ -775,7 +799,7 @@ def wizard_schedule() -> bool:
         print_success(f"Hooks installed in {hook_count} repos (generates after 5 commits)")
 
     else:
-        # Manual only
+        # Manual only (choice == 2)
         config["generation"]["auto_generate_on_hook"] = False
         save_config(config)
         print_info("Manual mode - run `repr generate` when you want stories")
@@ -841,8 +865,6 @@ def run_configure_menu() -> None:
     Show the main configure menu.
     """
     console.print()
-    console.print("[bold]What would you like to configure?[/]")
-    console.print()
 
     # Get current status
     llm_config = get_llm_config()
@@ -866,22 +888,22 @@ def run_configure_menu() -> None:
     elif config.get("generation", {}).get("auto_generate_on_hook"):
         schedule_status = "On commit via hooks"
 
-    console.print(f"  [bold]1.[/] LLM          [{BRAND_MUTED}]{llm_status}[/]")
-    console.print(f"  [bold]2.[/] Repositories [{BRAND_MUTED}]{len(tracked)} tracked[/]")
-    console.print(f"  [bold]3.[/] Schedule     [{BRAND_MUTED}]{schedule_status}[/]")
-    console.print()
-    console.print(f"  [bold]q.[/] Quit")
+    menu_options = [
+        f"LLM          - {llm_status}",
+        f"Repositories - {len(tracked)} tracked",
+        f"Schedule     - {schedule_status}",
+        "Quit",
+    ]
+
+    console.print(f"[{BRAND_MUTED}]Use ↑↓ to navigate, Enter to select[/]")
     console.print()
 
-    choice = Prompt.ask("Choose", default="q")
+    choice = select_option(menu_options, title="What would you like to configure?")
 
-    if choice == "1":
+    if choice == 0:
         wizard_llm()
-    elif choice == "2":
+    elif choice == 1:
         wizard_repos()
-    elif choice == "3":
+    elif choice == 2:
         wizard_schedule()
-    elif choice.lower() == "q":
-        return
-    else:
-        print_error("Invalid selection")
+    # choice == 3 or None means quit
