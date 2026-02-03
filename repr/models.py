@@ -292,6 +292,10 @@ class Story(BaseModel):
     author_name: str = Field(default="unknown", description="Claimed username, or git author from first commit")
     author_email: str = Field(default="", description="Git author email for Gravatar")
 
+    # Ownership and visibility
+    user_id: str | None = Field(default=None, description="User ID if connected to repr.dev")
+    visibility: str = Field(default="private", description="public, private, or connections")
+
     # 1:M relationships (SHAs/IDs, not full objects)
     commit_shas: list[str] = Field(default_factory=list)
     session_ids: list[str] = Field(default_factory=list)

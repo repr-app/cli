@@ -17,7 +17,7 @@ from .storage import generate_ulid
 
 
 # Schema version for migrations
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def get_db_path() -> Path:
@@ -269,6 +269,9 @@ class ReprDatabase:
             ("author_name", "'unknown'"),
             # v9: author_email for Gravatar
             ("author_email", "''"),
+            # v10: user_id and visibility for cloud sync
+            ("user_id", "NULL"),
+            ("visibility", "'private'"),
         ]
 
         for col, default in required_columns:
@@ -388,6 +391,23 @@ class ReprDatabase:
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
                     (7,)
+                )
+
+            # Migration v7 -> v8: Add user_id and visibility for cloud sync
+            if current_version < 8:
+                for col, default in [
+                    ("user_id", "NULL"),
+                    ("visibility", "'private'"),
+                ]:
+                    try:
+                        conn.execute(f"ALTER TABLE stories ADD COLUMN {col} TEXT DEFAULT {default}")
+                    except sqlite3.OperationalError:
+                        # Column already exists
+                        pass
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                    (8,)
                 )
 
             # Ensure schema version is set for fresh databases
@@ -543,8 +563,8 @@ class ReprDatabase:
                     hook, what, value, insight, show, diagram, post_body,
                     public_post, public_show, internal_post, internal_show, internal_details,
                     file_changes, key_snippets, total_insertions, total_deletions,
-                    author_name, author_email
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    author_name, author_email, user_id, visibility
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     title=excluded.title,
@@ -577,7 +597,9 @@ class ReprDatabase:
                     total_insertions=excluded.total_insertions,
                     total_deletions=excluded.total_deletions,
                     author_name=excluded.author_name,
-                    author_email=excluded.author_email
+                    author_email=excluded.author_email,
+                    user_id=COALESCE(excluded.user_id, stories.user_id),
+                    visibility=COALESCE(excluded.visibility, stories.visibility)
                 """,
                 (
                     story.id,
@@ -615,6 +637,8 @@ class ReprDatabase:
                     story.total_deletions,
                     story.author_name,
                     story.author_email,
+                    story.user_id,
+                    story.visibility,
                 )
             )
 
@@ -643,6 +667,24 @@ class ReprDatabase:
                 )
 
         return story.id
+
+    def update_story_visibility(self, story_id: str, visibility: str) -> bool:
+        """Update the visibility of a story."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE stories SET visibility = ?, updated_at = ? WHERE id = ?",
+                (visibility, datetime.now(timezone.utc).isoformat(), story_id)
+            )
+            return cursor.rowcount > 0
+
+    def update_story_user_id(self, story_id: str, user_id: str) -> bool:
+        """Update the user_id of a story (for linking to cloud account)."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE stories SET user_id = ?, updated_at = ? WHERE id = ?",
+                (user_id, datetime.now(timezone.utc).isoformat(), story_id)
+            )
+            return cursor.rowcount > 0
 
     def _row_to_story(self, row: sqlite3.Row, conn: sqlite3.Connection) -> Story:
         """Convert a database row to a Story object."""
@@ -712,6 +754,9 @@ class ReprDatabase:
             total_deletions=int(_get("total_deletions", 0) or 0),
             author_name=_get("author_name", "unknown"),
             author_email=_get("author_email", ""),
+            # Cloud sync fields
+            user_id=_get("user_id", None) or None,
+            visibility=_get("visibility", "private"),
         )
 
     def get_story(self, story_id: str) -> Story | None:
