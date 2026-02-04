@@ -319,18 +319,29 @@ class SessionExtractor:
         # Call LLM (using sync client to avoid event loop cleanup issues)
         client = self._get_client()
 
-        try:
-            response = client.chat.completions.create(
-                model=self.model.split("/")[-1] if "/" in self.model else self.model,
-                messages=[
+        def make_extraction_request(use_temperature: bool = True):
+            kwargs = {
+                "model": self.model.split("/")[-1] if "/" in self.model else self.model,
+                "messages": [
                     {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
                     {"role": "user", "content": EXTRACTION_USER_PROMPT.format(
                         session_transcript=transcript
                     )},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.3,
-            )
+                "response_format": {"type": "json_object"},
+            }
+            if use_temperature:
+                kwargs["temperature"] = 0.3
+            return client.chat.completions.create(**kwargs)
+
+        try:
+            try:
+                response = make_extraction_request(use_temperature=True)
+            except Exception as e:
+                if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+                    response = make_extraction_request(use_temperature=False)
+                else:
+                    raise
 
             # Parse response
             content = response.choices[0].message.content

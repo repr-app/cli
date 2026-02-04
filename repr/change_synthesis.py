@@ -418,14 +418,25 @@ async def explain_group(
         changes=changes_str,
     )
 
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": GROUP_EXPLAIN_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.7,
-    )
+    async def make_request(use_temperature: bool = True):
+        kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": GROUP_EXPLAIN_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        if use_temperature:
+            kwargs["temperature"] = 0.7
+        return await client.chat.completions.create(**kwargs)
+
+    try:
+        response = await make_request(use_temperature=True)
+    except Exception as e:
+        if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+            response = await make_request(use_temperature=False)
+        else:
+            raise
 
     return response.choices[0].message.content.strip()
 
@@ -455,15 +466,26 @@ async def synthesize_changes(
         unpushed=format_commit_changes(report.unpushed),
     )
 
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": CHANGE_SYNTHESIS_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.7,
-    )
+    async def make_synthesis_request(use_temperature: bool = True):
+        kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": CHANGE_SYNTHESIS_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if use_temperature:
+            kwargs["temperature"] = 0.7
+        return await client.chat.completions.create(**kwargs)
+
+    try:
+        response = await make_synthesis_request(use_temperature=True)
+    except Exception as e:
+        if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+            response = await make_synthesis_request(use_temperature=False)
+        else:
+            raise
 
     content = response.choices[0].message.content
     data = json.loads(content)

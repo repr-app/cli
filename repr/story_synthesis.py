@@ -648,18 +648,29 @@ class StorySynthesizer:
         client = self._get_client()
         commits_text = self._format_commits_for_prompt(commits)
 
-        try:
-            response = client.chat.completions.create(
-                model=self.model.split("/")[-1] if "/" in self.model else self.model,
-                messages=[
+        def make_request(use_temperature: bool = True):
+            kwargs = {
+                "model": self.model.split("/")[-1] if "/" in self.model else self.model,
+                "messages": [
                     {"role": "system", "content": STORY_SYNTHESIS_SYSTEM},
                     {"role": "user", "content": STORY_SYNTHESIS_USER.format(
                         commits_text=commits_text
                     )},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.3,
-            )
+                "response_format": {"type": "json_object"},
+            }
+            if use_temperature:
+                kwargs["temperature"] = 0.3
+            return client.chat.completions.create(**kwargs)
+
+        try:
+            try:
+                response = make_request(use_temperature=True)
+            except Exception as e:
+                if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+                    response = make_request(use_temperature=False)
+                else:
+                    raise
 
             content = response.choices[0].message.content
 
@@ -1061,17 +1072,28 @@ async def transform_story_for_feed(
         )
         response_model = InternalStory
 
-    try:
-        # Use sync client to avoid event loop cleanup issues
-        response = client.chat.completions.create(
-            model=model_name.split("/")[-1] if "/" in model_name else model_name,
-            messages=[
+    def make_story_request(use_temperature: bool = True):
+        kwargs = {
+            "model": model_name.split("/")[-1] if "/" in model_name else model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-        )
+            "response_format": {"type": "json_object"},
+        }
+        if use_temperature:
+            kwargs["temperature"] = 0.7
+        return client.chat.completions.create(**kwargs)
+
+    try:
+        # Use sync client to avoid event loop cleanup issues
+        try:
+            response = make_story_request(use_temperature=True)
+        except Exception as e:
+            if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+                response = make_story_request(use_temperature=False)
+            else:
+                raise
 
         content = response.choices[0].message.content.strip()
 

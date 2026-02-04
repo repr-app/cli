@@ -6075,16 +6075,29 @@ def create_branch(
 
             prompt = COMMIT_MESSAGE_USER.format(changes=changes_str)
 
-            with create_spinner("Generating branch name..."):
-                response = asyncio.run(client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
+            async def make_branch_request(use_temperature: bool = True):
+                kwargs = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
                         {"role": "system", "content": COMMIT_MESSAGE_SYSTEM},
                         {"role": "user", "content": prompt},
                     ],
-                    response_format={"type": "json_object"},
-                    temperature=0.3,
-                ))
+                    "response_format": {"type": "json_object"},
+                }
+                if use_temperature:
+                    kwargs["temperature"] = 0.3
+                return await client.chat.completions.create(**kwargs)
+
+            async def get_branch_response():
+                try:
+                    return await make_branch_request(use_temperature=True)
+                except Exception as e:
+                    if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+                        return await make_branch_request(use_temperature=False)
+                    raise
+
+            with create_spinner("Generating branch name..."):
+                response = asyncio.run(get_branch_response())
                 data = json.loads(response.choices[0].message.content)
                 branch_name = data.get("branch", "")
                 commit_msg = data.get("message", "")
@@ -6227,16 +6240,29 @@ def commit_staged(
             changes_str = format_file_changes(staged)
             prompt = COMMIT_MESSAGE_USER.format(changes=changes_str)
 
-            with create_spinner("Generating commit message..."):
-                response = asyncio.run(client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
+            async def make_commit_request(use_temperature: bool = True):
+                kwargs = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
                         {"role": "system", "content": COMMIT_MESSAGE_SYSTEM},
                         {"role": "user", "content": prompt},
                     ],
-                    response_format={"type": "json_object"},
-                    temperature=0.3,
-                ))
+                    "response_format": {"type": "json_object"},
+                }
+                if use_temperature:
+                    kwargs["temperature"] = 0.3
+                return await client.chat.completions.create(**kwargs)
+
+            async def get_commit_response():
+                try:
+                    return await make_commit_request(use_temperature=True)
+                except Exception as e:
+                    if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+                        return await make_commit_request(use_temperature=False)
+                    raise
+
+            with create_spinner("Generating commit message..."):
+                response = asyncio.run(get_commit_response())
                 data = json.loads(response.choices[0].message.content)
                 branch_name = data.get("branch", "")
                 commit_msg = data.get("message", "")
@@ -6665,16 +6691,29 @@ def create_pr(
 
         prompt = PR_USER.format(commits=commits_text)
 
-        with create_spinner("Generating PR..."):
-            response = asyncio.run(client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
+        async def make_pr_request(use_temperature: bool = True):
+            kwargs = {
+                "model": "gpt-4o-mini",
+                "messages": [
                     {"role": "system", "content": PR_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.3,
-            ))
+                "response_format": {"type": "json_object"},
+            }
+            if use_temperature:
+                kwargs["temperature"] = 0.3
+            return await client.chat.completions.create(**kwargs)
+
+        async def get_pr_response():
+            try:
+                return await make_pr_request(use_temperature=True)
+            except Exception as e:
+                if "temperature" in str(e).lower() and "unsupported" in str(e).lower():
+                    return await make_pr_request(use_temperature=False)
+                raise
+
+        with create_spinner("Generating PR..."):
+            response = asyncio.run(get_pr_response())
             data = json.loads(response.choices[0].message.content)
             pr_title = data.get("title", current_branch)
             pr_body = data.get("body", "")
