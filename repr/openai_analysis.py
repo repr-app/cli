@@ -240,7 +240,9 @@ No corporate fluff. No "enhanced", "improved", "robust". Just say what happened.
 
 {commits_formatted}"""
 
-    try:
+    async def make_request(use_temperature: bool = True):
+        """Make API request, optionally with temperature."""
+        temp_kwargs = {"temperature": EXTRACTION_TEMPERATURE} if use_temperature else {}
         if structured:
             # Use structured output with Pydantic model
             response = await client.beta.chat.completions.parse(
@@ -249,9 +251,9 @@ No corporate fluff. No "enhanced", "improved", "robust". Just say what happened.
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=EXTRACTION_TEMPERATURE,
                 max_tokens=16000,
                 response_format=ExtractedCommitBatch,
+                **temp_kwargs,
             )
 
             parsed = response.choices[0].message.parsed
@@ -292,15 +294,23 @@ No corporate fluff. No "enhanced", "improved", "robust". Just say what happened.
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=EXTRACTION_TEMPERATURE,
                 max_tokens=16000,
+                **temp_kwargs,
             )
-            
+
             return response.choices[0].message.content or ""
+
+    try:
+        return await make_request(use_temperature=True)
     except Exception as e:
-        error_msg = str(e).lower()
+        error_msg = str(e)
+        error_lower = error_msg.lower()
+        # Handle models that don't support custom temperature
+        if "temperature" in error_lower and "unsupported" in error_lower:
+            # Retry without temperature parameter
+            return await make_request(use_temperature=False)
         # Handle content moderation blocks gracefully
-        if "blocked" in error_msg or "content" in error_msg or "moderation" in error_msg:
+        if "blocked" in error_lower or "content" in error_lower or "moderation" in error_lower:
             # Skip this batch but continue with others
             if structured:
                 return [
@@ -421,18 +431,29 @@ Synthesize this into a cohesive developer profile in Markdown format starting wi
 
 Focus on CONCRETE technical accomplishments AND the reasoning behind key decisions. For each major feature or system, explain WHY it was built that way—what problem it solved, what user need it addressed, or what technical constraint it navigated."""
 
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=SYNTHESIS_TEMPERATURE,
-        max_tokens=16000,  # Increased for reasoning models
-    )
-    
+    async def make_synthesis_request(use_temperature: bool = True):
+        temp_kwargs = {"temperature": SYNTHESIS_TEMPERATURE} if use_temperature else {}
+        return await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=16000,  # Increased for reasoning models
+            **temp_kwargs,
+        )
+
+    try:
+        response = await make_synthesis_request(use_temperature=True)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "temperature" in error_msg and "unsupported" in error_msg:
+            response = await make_synthesis_request(use_temperature=False)
+        else:
+            raise
+
     llm_content = response.choices[0].message.content or ""
-    
+
     # Prepend metadata header
     return f"{metadata_header}\n\n---\n\n{llm_content}"
 
@@ -731,16 +752,27 @@ Preserve and highlight the "why" explanations that demonstrate engineering judgm
             progress=95.0,
         )
     
-    response = await client.chat.completions.create(
-        model=final_synthesis_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=SYNTHESIS_TEMPERATURE,
-        max_tokens=16000,
-    )
-    
+    async def make_final_request(use_temperature: bool = True):
+        temp_kwargs = {"temperature": SYNTHESIS_TEMPERATURE} if use_temperature else {}
+        return await client.chat.completions.create(
+            model=final_synthesis_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=16000,
+            **temp_kwargs,
+        )
+
+    try:
+        response = await make_final_request(use_temperature=True)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "temperature" in error_msg and "unsupported" in error_msg:
+            response = await make_final_request(use_temperature=False)
+        else:
+            raise
+
     if progress_callback:
         progress_callback(
             step="Complete",
@@ -748,9 +780,9 @@ Preserve and highlight the "why" explanations that demonstrate engineering judgm
             repo="",
             progress=100.0,
         )
-    
+
     llm_content = response.choices[0].message.content or ""
-    
+
     # Prepend metadata header
     return f"{metadata_header}\n\n---\n\n{llm_content}"
 
