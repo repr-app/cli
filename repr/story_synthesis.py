@@ -559,10 +559,20 @@ class StorySynthesizer:
                 return llm_config["local_model"]
             elif default_mode == "cloud" and llm_config.get("cloud_model"):
                 return llm_config["cloud_model"]
+            elif default_mode.startswith("byok:"):
+                # BYOK mode - use the provider's configured model
+                provider = default_mode.split(":", 1)[1]
+                byok_config = llm_config.get("byok", {}).get(provider, {})
+                if byok_config.get("model"):
+                    return byok_config["model"]
 
-            # Fallback to any configured model
-            if llm_config.get("local_model"):
-                return llm_config["local_model"]
+            # Fallback to BYOK model if configured
+            byok = llm_config.get("byok", {})
+            for provider_config in byok.values():
+                if provider_config.get("model"):
+                    return provider_config["model"]
+
+            # Fallback to cloud model
             if llm_config.get("cloud_model"):
                 return llm_config["cloud_model"]
         except Exception:
