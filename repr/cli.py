@@ -406,12 +406,16 @@ def main(
     migrate_plaintext_auth()
 
     # First-run detection: trigger wizard on first use
-    # Skip for: configure, --help, mcp (automated)
+    # Skip for: configure, --help, mcp (automated), CI, non-interactive
     skip_first_run_commands = {"configure", "mcp", None}
     if ctx.invoked_subcommand not in skip_first_run_commands:
-        from .configure import is_first_run, run_full_wizard
-        if is_first_run():
-            run_full_wizard()
+        import os
+        is_ci = os.getenv("CI") or os.getenv("GITHUB_ACTIONS") or os.getenv("REPR_CI")
+        is_interactive = sys.stdin.isatty() if hasattr(sys.stdin, 'isatty') else False
+        if is_interactive and not is_ci:
+            from .configure import is_first_run, run_full_wizard
+            if is_first_run():
+                run_full_wizard()
 
     # Track command usage (if telemetry enabled)
     from .telemetry import track_command
