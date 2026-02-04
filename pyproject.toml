@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repr-cli"
-version = "0.2.16"
+version = "0.2.17"
 description = "A beautiful, privacy-first CLI that analyzes your code repositories and generates a compelling developer profile"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -60,7 +60,7 @@ where = ["."]
 include = ["repr*"]
 
 [tool.setuptools.package-data]
-"repr.dashboard" = ["index.html", "static/**/*"]
+"repr.dashboard" = ["dist/**/*"]
 
 [tool.black]
 line-length = 100

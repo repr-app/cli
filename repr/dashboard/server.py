@@ -10,6 +10,7 @@ import http.server
 import json
 import mimetypes
 import socketserver
+import threading
 from pathlib import Path
 
 from .manager import get_dashboard_path, check_for_updates
@@ -213,6 +214,447 @@ def _get_cron_status() -> dict:
     }
 
 
+# ============================================================================
+# Auth API helpers
+# ============================================================================
+
+# Global state for active login flow (only one at a time per dashboard)
+_active_login_flow: dict | None = None
+_login_flow_lock = threading.Lock()
+
+
+def _get_auth_status() -> dict:
+    """Get current authentication status."""
+    from ..config import get_auth, is_authenticated
+
+    if not is_authenticated():
+        return {
+            "authenticated": False,
+            "user": None,
+        }
+
+    auth = get_auth()
+    return {
+        "authenticated": True,
+        "user": {
+            "user_id": auth.get("user_id"),
+            "email": auth.get("email"),
+            "username": auth.get("username"),
+            "authenticated_at": auth.get("authenticated_at"),
+        },
+    }
+
+
+def _start_login_flow() -> dict:
+    """Start device code login flow."""
+    global _active_login_flow
+
+    import asyncio
+    from ..auth import request_device_code, AuthError
+
+    with _login_flow_lock:
+        # Check if already logged in
+        from ..config import is_authenticated
+        if is_authenticated():
+            return {"error": "already_authenticated", "message": "Already logged in"}
+
+        # Check if flow already active
+        if _active_login_flow is not None:
+            # Return existing flow info
+            return {
+                "status": "pending",
+                "user_code": _active_login_flow["user_code"],
+                "verification_url": _active_login_flow["verification_url"],
+                "expires_in": _active_login_flow["expires_in"],
+            }
+
+        try:
+            # Request device code
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                device_code_response = loop.run_until_complete(request_device_code())
+            finally:
+                loop.close()
+
+            # Store flow state
+            _active_login_flow = {
+                "device_code": device_code_response.device_code,
+                "user_code": device_code_response.user_code,
+                "verification_url": device_code_response.verification_url,
+                "expires_in": device_code_response.expires_in,
+                "interval": device_code_response.interval,
+            }
+
+            return {
+                "status": "pending",
+                "user_code": device_code_response.user_code,
+                "verification_url": device_code_response.verification_url,
+                "expires_in": device_code_response.expires_in,
+            }
+
+        except AuthError as e:
+            return {"error": "auth_error", "message": str(e)}
+        except Exception as e:
+            return {"error": "unknown_error", "message": str(e)}
+
+
+def _poll_login_status() -> dict:
+    """Poll for login completion."""
+    global _active_login_flow
+
+    import httpx
+    from ..config import get_api_base, is_authenticated
+    from ..auth import save_token, TokenResponse
+    from ..telemetry import get_device_id
+    import platform
+    import socket
+
+    with _login_flow_lock:
+        # Check if already logged in
+        if is_authenticated():
+            _active_login_flow = None
+            return {"status": "completed", "authenticated": True}
+
+        # Check if flow is active
+        if _active_login_flow is None:
+            return {"status": "no_flow", "message": "No login flow active"}
+
+        device_code = _active_login_flow["device_code"]
+
+        try:
+            # Get device name
+            hostname = socket.gethostname()
+            system = platform.system()
+            device_name = f"{hostname} ({system})"
+
+            # Poll the token endpoint
+            token_url = f"{get_api_base()}/token"
+            print(f"[DEBUG] Polling token URL: {token_url}")
+
+            with httpx.Client() as client:
+                response = client.post(
+                    token_url,
+                    json={
+                        "device_code": device_code,
+                        "client_id": "repr-cli",
+                        "device_id": get_device_id(),
+                        "device_name": device_name,
+                    },
+                    timeout=30,
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    user_data = data.get("user", {})
+                    token = TokenResponse(
+                        access_token=data["access_token"],
+                        user_id=user_data.get("id", ""),
+                        email=user_data.get("email", ""),
+                        username=user_data.get("username"),
+                        litellm_api_key=data.get("litellm_api_key"),
+                    )
+                    save_token(token)
+
+                    # Clear flow
+                    _active_login_flow = None
+
+                    return {
+                        "status": "completed",
+                        "authenticated": True,
+                        "user": {
+                            "user_id": token.user_id,
+                            "email": token.email,
+                            "username": token.username,
+                        },
+                    }
+
+                if response.status_code == 400:
+                    data = response.json()
+                    error = data.get("error", "unknown")
+
+                    if error == "authorization_pending":
+                        return {"status": "pending", "message": "Waiting for authorization"}
+                    elif error == "slow_down":
+                        return {"status": "pending", "message": "Slow down, polling too fast"}
+                    elif error == "expired_token":
+                        _active_login_flow = None
+                        return {"status": "expired", "message": "Device code expired"}
+                    elif error == "access_denied":
+                        _active_login_flow = None
+                        return {"status": "denied", "message": "Authorization denied"}
+                    else:
+                        _active_login_flow = None
+                        return {"status": "error", "message": f"Authorization failed: {error}"}
+
+                return {"status": "error", "message": f"Unexpected status: {response.status_code}"}
+
+        except httpx.RequestError as e:
+            return {"status": "error", "message": f"Network error: {str(e)}"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+
+def _cancel_login_flow() -> dict:
+    """Cancel active login flow."""
+    global _active_login_flow
+
+    with _login_flow_lock:
+        if _active_login_flow is None:
+            return {"success": True, "message": "No active flow"}
+
+        _active_login_flow = None
+        return {"success": True, "message": "Login flow cancelled"}
+
+
+def _logout() -> dict:
+    """Logout current user."""
+    global _active_login_flow
+
+    from ..auth import logout
+    from ..config import is_authenticated
+
+    with _login_flow_lock:
+        _active_login_flow = None
+
+    if not is_authenticated():
+        return {"success": True, "message": "Already logged out"}
+
+    logout()
+    return {"success": True, "message": "Logged out successfully"}
+
+
+def _save_auth_token(token_data: dict) -> dict:
+    """Save auth token received from frontend direct auth with api.repr.dev."""
+    from ..auth import save_token, TokenResponse
+
+    try:
+        user = token_data.get("user", {})
+        token = TokenResponse(
+            access_token=token_data["access_token"],
+            user_id=user.get("id", ""),
+            email=user.get("email", ""),
+            username=user.get("username"),
+            litellm_api_key=token_data.get("litellm_api_key"),
+        )
+        save_token(token)
+        return {"success": True, "message": "Token saved successfully"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# Username API helpers
+# ============================================================================
+
+def _get_username_info() -> dict:
+    """Get current username info (local + remote)."""
+    from ..config import get_auth, get_profile_config, is_authenticated
+
+    profile = get_profile_config()
+    local_username = profile.get("username")
+    claimed = profile.get("claimed", False)
+
+    result = {
+        "local_username": local_username,
+        "claimed": claimed,
+        "remote_username": None,
+    }
+
+    # If authenticated, get remote username
+    if is_authenticated():
+        auth = get_auth()
+        result["remote_username"] = auth.get("username")
+        result["user_id"] = auth.get("user_id")
+        result["email"] = auth.get("email")
+
+    return result
+
+
+def _set_local_username(username: str) -> dict:
+    """Set local username (without claiming on server)."""
+    from ..config import set_profile_config
+
+    if not username or not username.strip():
+        return {"success": False, "error": "Username cannot be empty"}
+
+    username = username.strip().lower()
+
+    # Basic validation
+    if len(username) < 3:
+        return {"success": False, "error": "Username must be at least 3 characters"}
+    if len(username) > 30:
+        return {"success": False, "error": "Username must be at most 30 characters"}
+
+    set_profile_config(username=username, claimed=False)
+    return {"success": True, "username": username}
+
+
+def _check_username_availability(username: str) -> dict:
+    """Check if username is available on the server."""
+    import httpx
+    from ..config import get_api_base
+
+    if not username or not username.strip():
+        return {"available": False, "reason": "Username cannot be empty"}
+
+    username = username.strip().lower()
+
+    try:
+        url = f"{get_api_base()}/username/check/{username}"
+        with httpx.Client() as client:
+            response = client.get(url, timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            return {"available": False, "reason": f"Server error: {response.status_code}"}
+    except httpx.RequestError as e:
+        return {"available": False, "reason": f"Network error: {str(e)}"}
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
+def _claim_username(username: str) -> dict:
+    """Claim username on the server."""
+    import httpx
+    from ..config import get_api_base, get_access_token, set_profile_config, is_authenticated
+
+    if not is_authenticated():
+        return {"success": False, "error": "Not authenticated. Please login first."}
+
+    if not username or not username.strip():
+        return {"success": False, "error": "Username cannot be empty"}
+
+    username = username.strip().lower()
+    token = get_access_token()
+
+    try:
+        url = f"{get_api_base()}/username/claim"
+        with httpx.Client() as client:
+            response = client.post(
+                url,
+                json={"username": username},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success"):
+                    # Update local config
+                    set_profile_config(username=username, claimed=True)
+                return data
+            return {"success": False, "error": f"Server error: {response.status_code}"}
+    except httpx.RequestError as e:
+        return {"success": False, "error": f"Network error: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# Visibility API helpers
+# ============================================================================
+
+def _get_visibility_settings() -> dict:
+    """Get visibility settings from config, with backend fetch if authenticated."""
+    from ..config import load_config, is_authenticated, get_access_token, get_api_base
+    import httpx
+
+    config = load_config()
+    privacy = config.get("privacy", {})
+
+    # Local defaults (all private by default)
+    local_settings = {
+        "profile": privacy.get("profile_visibility", "private"),
+        "repos_default": privacy.get("repos_default_visibility", "private"),
+        "stories_default": privacy.get("stories_default_visibility", "private"),
+    }
+
+    # Try to fetch from backend if authenticated
+    if is_authenticated():
+        try:
+            token = get_access_token()
+            url = f"{get_api_base()}/visibility"
+            with httpx.Client() as client:
+                response = client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+                if response.status_code == 200:
+                    backend_settings = response.json()
+                    # Merge backend settings (they take precedence)
+                    return {
+                        "profile": backend_settings.get("profile", local_settings["profile"]),
+                        "repos_default": backend_settings.get("repos_default", local_settings["repos_default"]),
+                        "stories_default": backend_settings.get("stories_default", local_settings["stories_default"]),
+                    }
+        except Exception:
+            pass  # Fall back to local settings
+
+    return local_settings
+
+
+def _set_visibility_settings(settings: dict) -> dict:
+    """Set visibility settings in config and sync to backend if authenticated."""
+    from ..config import load_config, save_config, is_authenticated, get_access_token, get_api_base
+    import httpx
+
+    config = load_config()
+    if "privacy" not in config:
+        config["privacy"] = {}
+
+    valid_values = {"public", "private", "connections"}
+    update_data = {}
+
+    if "profile" in settings and settings["profile"] in valid_values:
+        config["privacy"]["profile_visibility"] = settings["profile"]
+        update_data["profile"] = settings["profile"]
+    if "repos_default" in settings and settings["repos_default"] in valid_values:
+        config["privacy"]["repos_default_visibility"] = settings["repos_default"]
+        update_data["repos_default"] = settings["repos_default"]
+    if "stories_default" in settings and settings["stories_default"] in valid_values:
+        config["privacy"]["stories_default_visibility"] = settings["stories_default"]
+        update_data["stories_default"] = settings["stories_default"]
+
+    save_config(config)
+
+    # Sync to backend if authenticated
+    backend_synced = False
+    if is_authenticated() and update_data:
+        try:
+            token = get_access_token()
+            url = f"{get_api_base()}/visibility"
+            with httpx.Client() as client:
+                response = client.patch(
+                    url,
+                    json=update_data,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30,
+                )
+                backend_synced = response.status_code == 200
+        except Exception:
+            pass  # Fail silently, local config is still saved
+
+    return {"success": True, "backend_synced": backend_synced}
+
+
+def _set_story_visibility(story_id: str, visibility: str) -> dict:
+    """Set visibility for a specific story."""
+    from ..db import get_db
+
+    valid_values = {"public", "private", "connections"}
+    if visibility not in valid_values:
+        return {"success": False, "error": f"Invalid visibility: {visibility}"}
+
+    db = get_db()
+    story = db.get_story(story_id)
+    if not story:
+        return {"success": False, "error": "Story not found"}
+
+    # Update the story visibility
+    db.update_story_visibility(story_id, visibility)
+    return {"success": True, "story_id": story_id, "visibility": visibility}
+
+
 class TimelineHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for story dashboard."""
 
@@ -233,6 +675,16 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_repos()
             elif self.path == "/api/cron":
                 self.serve_cron()
+            elif self.path == "/api/auth":
+                self.serve_auth_status()
+            elif self.path == "/api/auth/login/status":
+                self.serve_login_poll()
+            elif self.path == "/api/username":
+                self.serve_username_info()
+            elif self.path.startswith("/api/username/check/"):
+                self.check_username()
+            elif self.path == "/api/visibility":
+                self.serve_visibility_settings()
             else:
                 self.send_error(404, "API Endpoint Not Found")
         elif "." in self.path.split("/")[-1]:
@@ -261,6 +713,22 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.rename_repo()
         elif self.path == "/api/generate":
             self.trigger_generation()
+        elif self.path == "/api/auth/login":
+            self.start_login()
+        elif self.path == "/api/auth/login/cancel":
+            self.cancel_login()
+        elif self.path == "/api/auth/save":
+            self.save_auth_token()
+        elif self.path == "/api/auth/logout":
+            self.do_logout()
+        elif self.path == "/api/username/set":
+            self.set_username()
+        elif self.path == "/api/username/claim":
+            self.claim_username()
+        elif self.path == "/api/visibility":
+            self.update_visibility_settings()
+        elif self.path.startswith("/api/stories/") and self.path.endswith("/visibility"):
+            self.update_story_visibility()
         else:
             self.send_error(404, "API Endpoint Not Found")
 
@@ -570,6 +1038,232 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", len(response.encode()))
             self.end_headers()
             self.wfile.write(response.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    # =========================================================================
+    # Auth endpoints
+    # =========================================================================
+
+    def serve_auth_status(self):
+        """Serve current authentication status."""
+        try:
+            status = _get_auth_status()
+            body = json.dumps(status)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def start_login(self):
+        """Start device code login flow."""
+        try:
+            result = _start_login_flow()
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def serve_login_poll(self):
+        """Poll for login completion."""
+        try:
+            result = _poll_login_status()
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def cancel_login(self):
+        """Cancel active login flow."""
+        try:
+            result = _cancel_login_flow()
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def save_auth_token(self):
+        """Save auth token from frontend direct auth."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body) if body else {}
+
+            result = _save_auth_token(data)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def do_logout(self):
+        """Logout current user."""
+        try:
+            result = _logout()
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    # =========================================================================
+    # Username endpoints
+    # =========================================================================
+
+    def serve_username_info(self):
+        """Serve current username info."""
+        try:
+            info = _get_username_info()
+            body = json.dumps(info)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def check_username(self):
+        """Check username availability."""
+        try:
+            # Extract username from path: /api/username/check/{username}
+            parts = self.path.split("/")
+            username = parts[-1] if len(parts) > 4 else ""
+
+            result = _check_username_availability(username)
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def set_username(self):
+        """Set local username."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode())
+            result = _set_local_username(data.get("username", ""))
+            response = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response.encode()))
+            self.end_headers()
+            self.wfile.write(response.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def claim_username(self):
+        """Claim username on server."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode())
+            result = _claim_username(data.get("username", ""))
+            response = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response.encode()))
+            self.end_headers()
+            self.wfile.write(response.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    # =========================================================================
+    # Visibility endpoints
+    # =========================================================================
+
+    def serve_visibility_settings(self):
+        """Serve visibility settings."""
+        try:
+            settings = _get_visibility_settings()
+            body = json.dumps(settings)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def update_visibility_settings(self):
+        """Update visibility settings."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode())
+            result = _set_visibility_settings(data)
+            response = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response.encode()))
+            self.end_headers()
+            self.wfile.write(response.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def update_story_visibility(self):
+        """Update visibility for a specific story."""
+        try:
+            # Extract story_id from path: /api/stories/{story_id}/visibility
+            parts = self.path.split("/")
+            story_id = parts[3] if len(parts) > 4 else ""
+
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode())
+            result = _set_story_visibility(story_id, data.get("visibility", ""))
+            response = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response.encode()))
+            self.end_headers()
+            self.wfile.write(response.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
         except Exception as e:
             self.send_error(500, str(e))
 

@@ -1,0 +1,3 @@
+# Bundled dashboard placeholder
+# This directory will contain the built Vue dashboard from repr-dashboard repo
+# The manager.py will look for index.html here as a fallback

@@ -668,3 +668,79 @@ async def get_friend_stories(username: str) -> list[dict[str, Any]]:
             raise APIError(f"Failed to get friend stories: {e.response.status_code}")
         except httpx.RequestError as e:
             raise APIError(f"Network error: {str(e)}")
+
+
+async def get_visibility_settings() -> dict[str, Any]:
+    """
+    Get visibility settings from the server.
+
+    Returns:
+        Dict with profile, repos_default, stories_default visibility settings
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    with httpx.Client() as client:
+        try:
+            response = client.get(
+                f"{get_api_base()}/visibility",
+                headers=_get_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to get visibility settings: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")
+
+
+async def update_visibility_settings(
+    profile: str | None = None,
+    repos_default: str | None = None,
+    stories_default: str | None = None,
+) -> dict[str, Any]:
+    """
+    Update visibility settings on the server.
+
+    Args:
+        profile: Profile visibility (public, private, connections)
+        repos_default: Default repos visibility (public, private, connections)
+        stories_default: Default stories visibility (public, private, connections)
+
+    Returns:
+        Updated visibility settings
+
+    Raises:
+        APIError: If request fails
+        AuthError: If not authenticated
+    """
+    with httpx.Client() as client:
+        try:
+            payload = {}
+            if profile is not None:
+                payload["profile"] = profile
+            if repos_default is not None:
+                payload["repos_default"] = repos_default
+            if stories_default is not None:
+                payload["stories_default"] = stories_default
+
+            response = client.patch(
+                f"{get_api_base()}/visibility",
+                headers=_get_headers(),
+                json=payload,
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise AuthError("Session expired. Please run 'repr login' again.")
+            raise APIError(f"Failed to update visibility settings: {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise APIError(f"Network error: {str(e)}")

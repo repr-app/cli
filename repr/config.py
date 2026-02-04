@@ -128,7 +128,9 @@ DEFAULT_CONFIG = {
     "privacy": {
         "lock_local_only": False,  # Disable cloud features entirely
         "lock_permanent": False,  # Make local-only lock irreversible
-        "profile_visibility": "public",  # "public", "unlisted", "private"
+        "profile_visibility": "private",  # "public", "private", "connections"
+        "repos_default_visibility": "private",  # Default visibility for new repos
+        "stories_default_visibility": "private",  # Default visibility for new stories
         "telemetry_enabled": False,  # Opt-in telemetry
     },
     "tracked_repos": [],  # List of {"path": str, "last_sync": str|None, "hook_installed": bool, "paused": bool}

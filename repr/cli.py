@@ -430,7 +430,7 @@ def main(
 @app.command("dashboard")
 def dashboard(
     port: int = typer.Option(
-        3000, "--port", "-p",
+        8787, "--port", "-p",
         help="Port to serve on",
     ),
     host: str = typer.Option(
@@ -451,7 +451,7 @@ def dashboard(
     Works from any directory - reads from central SQLite database.
 
     Examples:
-        repr dashboard              # localhost:3000, auto-opens browser
+        repr dashboard              # localhost:8787, auto-opens browser
         repr dashboard --port 8080  # custom port
         repr dashboard --no-open    # don't auto-open browser
         rp dashboard                # using the 'rp' alias
@@ -5612,7 +5612,7 @@ def timeline_ingest_session(
 @timeline_app.command("serve", hidden=True)
 def timeline_serve(
     port: int = typer.Option(
-        3000, "--port", "-p",
+        8787, "--port", "-p",
         help="Port to serve on",
     ),
     host: str = typer.Option(

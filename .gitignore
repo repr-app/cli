@@ -26,3 +26,4 @@ venv/
 # Nested repos/artifacts
 cli/
 web/
+!repr/dashboard/dist/

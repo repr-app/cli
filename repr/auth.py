@@ -73,11 +73,13 @@ async def request_device_code() -> DeviceCodeResponse:
     Raises:
         AuthError: If request fails
     """
+    url = _get_device_code_url()
+    print(f"[DEBUG] Requesting device code from: {url}")
     # Use sync client to avoid event loop cleanup issues
     with httpx.Client() as client:
         try:
             response = client.post(
-                _get_device_code_url(),
+                url,
                 json={"client_id": "repr-cli"},
                 timeout=30,
             )
