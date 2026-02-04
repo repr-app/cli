@@ -933,23 +933,39 @@ def generate(
             console.print("  repr generate --local")
             raise typer.Exit(1)
     
-    if not local and not cloud:
-        # Check config for default mode
-        llm_config = get_llm_config()
-        default_mode = llm_config.get("default", "local")
+    # Resolve LLM mode and model from config
+    llm_config = get_llm_config()
+    default_mode = llm_config.get("default", "local")
+    byok_provider = None
 
+    if not local and not cloud:
         if default_mode == "local":
             local = True
         elif default_mode == "cloud" and is_authenticated() and is_cloud_allowed():
             cloud = True
+        elif default_mode.startswith("byok:"):
+            byok_provider = default_mode.split(":", 1)[1]
         else:
             # Fallback: local if not signed in or cloud not allowed
             local = True
-    
+
+    # Determine model and provider string for display
+    if byok_provider:
+        from .config import get_byok_config, BYOK_PROVIDERS
+        byok_cfg = get_byok_config(byok_provider)
+        model_name = byok_cfg.get("model") if byok_cfg else None
+        provider_name = BYOK_PROVIDERS.get(byok_provider, {}).get("name", byok_provider)
+        mode_str = f"{provider_name}: {model_name}" if model_name else provider_name
+    elif local:
+        provider_name = llm_config.get("local_provider") or "Ollama"
+        model_name = llm_config.get("local_model") or "llama3.2"
+        mode_str = f"{provider_name}: {model_name}"
+    else:
+        model_name = llm_config.get("cloud_model") or "gpt-4o-mini"
+        mode_str = f"Cloud: {model_name}"
+
     if not json_output:
         print_header()
-    
-    mode_str = "local LLM" if local else "cloud LLM"
     
     # Build timeframe string for display
     if commits:
@@ -1073,13 +1089,8 @@ def generate(
              if not json_output:
                  console.print(f"  Batch {current}/{total}")
 
-        # Determine model based on mode (respect config default if no flag given)
-        llm_config = get_llm_config()
-        use_local = local or (not cloud and llm_config.get("default") == "local")
-        if use_local:
-            model = llm_config.get("local_model") or "llama3.2"
-        else:
-            model = None  # Use default cloud model
+        # Use model_name resolved earlier (handles local, cloud, and BYOK)
+        model = model_name
 
         try:
             # Run synthesis sync
