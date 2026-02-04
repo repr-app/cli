@@ -1136,6 +1136,9 @@ def generate(
                         story.public_show = result.show
                         story.internal_show = result.show
                     except Exception as e:
+                        # Print error for visibility
+                        if not json_output:
+                            print_warning(f"  Post generation failed: {e}")
                         # Fallback: build from story data
                         from .story_synthesis import _build_fallback_codex
                         result = _build_fallback_codex(story, "internal")

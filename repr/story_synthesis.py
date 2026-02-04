@@ -683,10 +683,9 @@ class StorySynthesizer:
             analysis = BatchAnalysis.model_validate_json(content)
 
         except Exception as e:
-            # Log the error for debugging
-            import os
-            if os.environ.get("REPR_DEBUG"):
-                print(f"DEBUG: Exception in LLM call: {type(e).__name__}: {e}")
+            # Always print error for visibility
+            from rich.console import Console
+            Console(stderr=True).print(f"[yellow]  LLM error: {type(e).__name__}: {e}[/]")
 
             # Fallback: each commit is its own story
             analysis = BatchAnalysis(stories=[
@@ -1095,6 +1094,9 @@ async def transform_story_for_feed(
         return result
 
     except Exception as e:
+        # Print error for visibility
+        from rich.console import Console
+        Console(stderr=True).print(f"[yellow]  Transform error: {type(e).__name__}: {e}[/]")
         # Fallback: construct structured content from available data
         return _build_fallback_codex(story, mode)
 
