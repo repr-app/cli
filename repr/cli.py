@@ -1031,7 +1031,11 @@ def generate(
 
         if not repo_commits:
             if not json_output:
-                console.print(f"  No matching commits found")
+                if commits:
+                    console.print(f"  [dim]No commits matching specified SHAs[/]")
+                else:
+                    filter_days_used = days if days else 90
+                    console.print(f"  [dim]No commits in the last {filter_days_used} days[/]")
             continue
 
         # Filter out commits that are already part of existing stories (unless --force)
