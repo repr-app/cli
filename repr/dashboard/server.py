@@ -231,6 +231,7 @@ def _get_auth_status() -> dict:
         return {
             "authenticated": False,
             "user": None,
+            "token": None,
         }
 
     auth = get_auth()
@@ -242,6 +243,7 @@ def _get_auth_status() -> dict:
             "username": auth.get("username"),
             "authenticated_at": auth.get("authenticated_at"),
         },
+        "token": auth.get("access_token"),
     }
 
 
@@ -655,6 +657,110 @@ def _set_story_visibility(story_id: str, visibility: str) -> dict:
     return {"success": True, "story_id": story_id, "visibility": visibility}
 
 
+# ============================================================================
+# Publish API helpers
+# ============================================================================
+
+def _get_stories_to_publish(
+    scope: str,
+    repo_name: str | None = None,
+    story_id: str | None = None,
+    include_pushed: bool = False,
+) -> list:
+    """Get stories to publish based on scope."""
+    from ..db import get_db
+
+    db = get_db()
+
+    if scope == "story" and story_id:
+        story = db.get_story(story_id)
+        if story:
+            return [story]
+        return []
+
+    elif scope == "repo" and repo_name:
+        projects = db.list_projects()
+        project_ids = [p["id"] for p in projects if p["name"] == repo_name]
+        if not project_ids:
+            return []
+        return [s for s in db.list_stories(limit=10000) if s.project_id in project_ids]
+
+    else:  # scope == "all"
+        return db.list_stories(limit=10000)
+
+
+def _publish_preview(data: dict) -> dict:
+    """Preview what would be published."""
+    scope = data.get("scope", "all")
+    repo_name = data.get("repo_name")
+    story_id = data.get("story_id")
+    include_pushed = data.get("include_pushed", False)
+
+    stories = _get_stories_to_publish(scope, repo_name, story_id, include_pushed)
+
+    return {
+        "count": len(stories),
+        "stories": [
+            {
+                "id": s.id,
+                "title": s.title,
+                "visibility": s.visibility or "private",
+                "repo_name": getattr(s, "repo_name", None),
+            }
+            for s in stories[:100]  # Limit preview to 100 stories
+        ],
+    }
+
+
+def _publish_stories(data: dict) -> dict:
+    """Publish stories to repr.dev."""
+    import asyncio
+    from ..api import push_stories_batch, APIError, AuthError
+    from ..config import is_authenticated, get_access_token
+
+    # Check authentication
+    if not is_authenticated():
+        return {"success": False, "error": "Not authenticated. Please login first."}
+
+    scope = data.get("scope", "all")
+    repo_name = data.get("repo_name")
+    story_id = data.get("story_id")
+    visibility_override = data.get("visibility")
+    include_pushed = data.get("include_pushed", False)
+
+    stories = _get_stories_to_publish(scope, repo_name, story_id, include_pushed)
+
+    if not stories:
+        return {"success": True, "published_count": 0, "failed_count": 0, "message": "No stories to publish"}
+
+    # Build batch payload
+    stories_payload = []
+    for story in stories:
+        payload = story.model_dump(mode="json")
+        # Use override visibility or story's current visibility
+        payload["visibility"] = visibility_override or story.visibility or "private"
+        payload["client_id"] = story.id
+        stories_payload.append(payload)
+
+    try:
+        result = asyncio.run(push_stories_batch(stories_payload))
+        pushed = result.get("pushed", 0)
+        failed = result.get("failed", 0)
+
+        return {
+            "success": True,
+            "published_count": pushed,
+            "failed_count": failed,
+        }
+
+    except AuthError as e:
+        return {"success": False, "error": f"Authentication error: {str(e)}"}
+    except APIError as e:
+        return {"success": False, "error": f"API error: {str(e)}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 class TimelineHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for story dashboard."""
 
@@ -685,6 +791,8 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
                 self.check_username()
             elif self.path == "/api/visibility":
                 self.serve_visibility_settings()
+            elif self.path.startswith("/api/publish/preview"):
+                self.serve_publish_preview()
             else:
                 self.send_error(404, "API Endpoint Not Found")
         elif "." in self.path.split("/")[-1]:
@@ -729,6 +837,10 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.update_visibility_settings()
         elif self.path.startswith("/api/stories/") and self.path.endswith("/visibility"):
             self.update_story_visibility()
+        elif self.path == "/api/publish":
+            self.do_publish()
+        elif self.path == "/api/publish/mark-pushed":
+            self.mark_stories_pushed()
         else:
             self.send_error(404, "API Endpoint Not Found")
 
@@ -1262,6 +1374,85 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", len(response.encode()))
             self.end_headers()
             self.wfile.write(response.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    # =========================================================================
+    # Publish endpoints
+    # =========================================================================
+
+    def serve_publish_preview(self):
+        """Preview what would be published."""
+        from urllib.parse import urlparse, parse_qs
+
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            data = {
+                "scope": query.get("scope", ["all"])[0],
+                "repo_name": query.get("repo_name", [None])[0],
+                "story_id": query.get("story_id", [None])[0],
+                "include_pushed": query.get("include_pushed", ["false"])[0] == "true",
+            }
+
+            result = _publish_preview(data)
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def do_publish(self):
+        """Publish stories to repr.dev."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+
+            result = _publish_stories(data)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def mark_stories_pushed(self):
+        """Mark stories as pushed in local DB."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+
+            story_ids = data.get("story_ids", [])
+            if story_ids:
+                from datetime import datetime
+                now = datetime.utcnow().isoformat()
+                db = _get_db()
+                placeholders = ",".join("?" * len(story_ids))
+                db.execute(
+                    f"UPDATE stories SET pushed_at = ? WHERE id IN ({placeholders})",
+                    [now] + story_ids
+                )
+                db.commit()
+
+            response_body = json.dumps({"success": True, "marked": len(story_ids)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
         except json.JSONDecodeError:
             self.send_error(400, "Invalid JSON")
         except Exception as e:

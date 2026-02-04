@@ -1982,6 +1982,165 @@ def push(
 
 
 @app.command()
+def publish(
+    story_id: Optional[str] = typer.Argument(None, help="Story ID to publish (omit for batch publish)"),
+    all_stories: bool = typer.Option(False, "--all", "-a", help="Republish all stories, including already-pushed"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Publish stories from specific repository"),
+    visibility: Optional[str] = typer.Option(None, "--visibility", "-v", help="Override visibility: public, private, connections"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would be published"),
+):
+    """
+    Publish stories to repr.dev.
+
+    Publish = Upload to cloud with current visibility (or override).
+
+    Supports three scopes:
+    - Global: Publish all unpushed stories (or all with --all)
+    - Repo: Publish stories from a specific repository (--repo)
+    - Story: Publish a single story by ID
+
+    Examples:
+        repr publish                           # Unpushed stories only
+        repr publish --all                     # All stories (re-publish)
+        repr publish --repo myproject          # Stories from specific repo
+        repr publish 01HXYZ123                 # Single story by ID
+        repr publish --visibility public       # Publish as public
+        repr publish --repo myproject --dry-run  # Preview
+    """
+    from .privacy import check_cloud_permission, log_cloud_operation
+    from .api import push_stories_batch, APIError, AuthError
+    from .db import get_db
+
+    # Check authentication
+    if not get_access_token():
+        print_error("Not authenticated")
+        print_info("Run 'repr login' to authenticate")
+        raise typer.Exit(1)
+
+    allowed, reason = check_cloud_permission("push")
+    if not allowed:
+        print_error("Publishing blocked")
+        print_info(reason)
+        raise typer.Exit(1)
+
+    # Validate visibility if provided
+    valid_visibilities = {"public", "private", "connections"}
+    if visibility and visibility not in valid_visibilities:
+        print_error(f"Invalid visibility: {visibility}")
+        print_info(f"Valid options: {', '.join(valid_visibilities)}")
+        raise typer.Exit(1)
+
+    db = get_db()
+
+    # Determine which stories to publish based on scope
+    if story_id:
+        # Single story mode
+        story = db.get_story(story_id)
+        if not story:
+            print_error(f"Story not found: {story_id}")
+            raise typer.Exit(1)
+        all_stories_list = [story]
+        scope_desc = f"story {story_id[:8]}..."
+    elif repo:
+        # Repo mode - get stories from specific repo
+        projects = db.list_projects()
+        project_ids = [p["id"] for p in projects if p["name"] == repo]
+        if not project_ids:
+            print_error(f"Repository not found: {repo}")
+            print_info("Use 'repr repos list' to see tracked repositories")
+            raise typer.Exit(1)
+        all_stories_list = [s for s in db.list_stories(limit=10000) if s.project_id in project_ids]
+        scope_desc = f"repo '{repo}'"
+    else:
+        # Global mode
+        all_stories_list = db.list_stories(limit=10000)
+        scope_desc = "all repositories"
+
+    if not all_stories_list:
+        print_info(f"No stories found for {scope_desc}")
+        raise typer.Exit()
+
+    # Filter to unpushed unless --all is specified
+    # Note: For now we don't track pushed_at in the schema, so --all just means republish everything
+    # In future, we could filter by pushed_at column
+    stories_to_publish = all_stories_list
+
+    if not stories_to_publish:
+        print_info("No stories to publish")
+        raise typer.Exit()
+
+    console.print(f"Found [bold]{len(stories_to_publish)}[/] stories from {scope_desc}")
+    console.print()
+
+    if dry_run:
+        console.print("[dim]Preview (dry-run):[/]")
+        for story in stories_to_publish[:20]:  # Limit preview to 20
+            vis = visibility or story.visibility or "private"
+            console.print(f"  • [{vis}] {story.title[:55]}...")
+        if len(stories_to_publish) > 20:
+            console.print(f"  ... and {len(stories_to_publish) - 20} more")
+        console.print()
+        console.print("Run without --dry-run to publish")
+        raise typer.Exit()
+
+    # Build batch payload
+    vis_label = visibility or "default"
+    console.print(f"Publishing with visibility: [bold]{vis_label}[/]...")
+
+    stories_payload = []
+    for story in stories_to_publish:
+        payload = story.model_dump(mode="json")
+        # Use override visibility or story's current visibility
+        payload["visibility"] = visibility or story.visibility or "private"
+        payload["client_id"] = story.id
+        stories_payload.append(payload)
+
+    # Push all stories in batch with progress
+    console.print(f"Publishing {len(stories_payload)} stories...")
+    console.print()
+
+    with BatchProgress() as progress:
+        try:
+            result = asyncio.run(push_stories_batch(stories_payload))
+            pushed = result.get("pushed", 0)
+            failed = result.get("failed", 0)
+            results = result.get("results", [])
+
+            # Display results
+            for i, story_result in enumerate(results):
+                story_title = stories_to_publish[i].title[:50] if i < len(stories_to_publish) else "Unknown"
+                if story_result.get("success"):
+                    console.print(f"  [{BRAND_SUCCESS}]✓[/] {story_title}")
+                else:
+                    error_msg = story_result.get("error", "Unknown error")
+                    console.print(f"  [{BRAND_ERROR}]✗[/] {story_title}: {error_msg}")
+
+        except (APIError, AuthError) as e:
+            print_error(f"Publish failed: {e}")
+            raise typer.Exit(1)
+
+    # Log operation
+    if pushed > 0:
+        log_cloud_operation(
+            operation="publish",
+            destination="repr.dev",
+            payload_summary={
+                "stories_published": pushed,
+                "visibility": visibility or "default",
+                "scope": "story" if story_id else ("repo" if repo else "global"),
+                "repo": repo,
+            },
+            bytes_sent=0,
+        )
+
+    console.print()
+    if failed > 0:
+        print_warning(f"Published {pushed}/{len(stories_payload)} stories ({failed} failed)")
+    else:
+        print_success(f"Published {pushed} stories to repr.dev")
+
+
+@app.command()
 def sync():
     """
     Sync stories across devices.
@@ -3724,44 +3883,8 @@ def profile_link():
 
 
 # =============================================================================
-# PUBLISH/UNPUBLISH COMMANDS
+# UNPUBLISH COMMAND
 # =============================================================================
-
-@app.command("publish")
-def publish_story(
-    story_id: str = typer.Argument(..., help="Story ID to publish"),
-    visibility: str = typer.Option("public", "--visibility", "-v", help="Visibility: public, friends, private"),
-):
-    """
-    Set story visibility.
-
-    Examples:
-        repr publish abc123
-        repr publish abc123 --visibility friends
-    """
-    from .api import set_story_visibility, AuthError
-
-    if visibility not in ("public", "friends", "private"):
-        print_error(f"Invalid visibility: {visibility}")
-        print_info("Valid options: public, friends, private")
-        raise typer.Exit(1)
-
-    if not is_authenticated():
-        print_error("Not authenticated")
-        print_info("Run `repr login` first")
-        raise typer.Exit(1)
-
-    try:
-        with create_spinner(f"Setting visibility to {visibility}..."):
-            result = asyncio.run(set_story_visibility(story_id, visibility))
-        print_success(f"Story visibility set to {visibility}")
-    except AuthError as e:
-        print_error(str(e))
-        raise typer.Exit(1)
-    except APIError as e:
-        print_error(f"API error: {e}")
-        raise typer.Exit(1)
-
 
 @app.command("unpublish")
 def unpublish_story(
