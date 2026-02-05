@@ -32,11 +32,17 @@ def _get_dashboard_dir() -> Path:
 def _get_stories_from_db() -> list[dict]:
     """Get stories from SQLite database."""
     from ..db import get_db
+    from ..tools import get_git_user_identity
 
     db = get_db()
     # Create project mapping
     projects = db.list_projects()
     project_map = {p["id"]: p["name"] for p in projects}
+    # Create project path mapping for checking git user per repo
+    project_path_map = {p["id"]: Path(p["path"]) for p in projects if p.get("path")}
+
+    # Get current git user identity (global)
+    current_user_email, current_user_name = get_git_user_identity()
 
     stories = db.list_stories(limit=500)
 
@@ -47,6 +53,23 @@ def _get_stories_from_db() -> list[dict]:
         story_dict["repo_name"] = project_map.get(story_dict.get("project_id"), "unknown")
 
         # author_name is already stored in the database, no git operations needed
+
+        # Check if story is publishable (author matches current git user)
+        story_author_email = story_dict.get("author_email", "")
+        story_author_name = story_dict.get("author_name", "")
+        is_publishable = False
+
+        # Check email match (primary)
+        if current_user_email and story_author_email:
+            if current_user_email.lower() == story_author_email.lower():
+                is_publishable = True
+
+        # Check name match (fallback)
+        if not is_publishable and current_user_name and story_author_name:
+            if current_user_name.lower() == story_author_name.lower():
+                is_publishable = True
+
+        story_dict["is_publishable"] = is_publishable
 
         # Convert datetime objects to ISO strings
         for key in ["created_at", "updated_at", "started_at", "ended_at"]:
@@ -667,14 +690,43 @@ def _get_stories_to_publish(
     story_id: str | None = None,
     include_pushed: bool = False,
 ) -> list:
-    """Get stories to publish based on scope."""
+    """Get stories to publish based on scope.
+
+    Only returns stories that are publishable by the current git user.
+    Stories from other authors are filtered out.
+    """
     from ..db import get_db
+    from ..tools import get_git_user_identity
 
     db = get_db()
 
+    # Get current git user identity
+    current_user_email, current_user_name = get_git_user_identity()
+
+    def is_publishable(story) -> bool:
+        """Check if a story is publishable by the current user."""
+        # If we can't determine the current user, don't allow publishing
+        if not current_user_email and not current_user_name:
+            return False
+
+        story_email = getattr(story, 'author_email', '') or ''
+        story_name = getattr(story, 'author_name', '') or ''
+
+        # Check email match (primary)
+        if current_user_email and story_email:
+            if current_user_email.lower() == story_email.lower():
+                return True
+
+        # Check name match (fallback)
+        if current_user_name and story_name:
+            if current_user_name.lower() == story_name.lower():
+                return True
+
+        return False
+
     if scope == "story" and story_id:
         story = db.get_story(story_id)
-        if story:
+        if story and is_publishable(story):
             return [story]
         return []
 
@@ -683,23 +735,51 @@ def _get_stories_to_publish(
         project_ids = [p["id"] for p in projects if p["name"] == repo_name]
         if not project_ids:
             return []
-        return [s for s in db.list_stories(limit=10000) if s.project_id in project_ids]
+        # Filter to only publishable stories
+        return [s for s in db.list_stories(limit=10000) if s.project_id in project_ids and is_publishable(s)]
 
     else:  # scope == "all"
-        return db.list_stories(limit=10000)
+        # Filter to only publishable stories
+        return [s for s in db.list_stories(limit=10000) if is_publishable(s)]
 
 
 def _publish_preview(data: dict) -> dict:
-    """Preview what would be published."""
+    """Preview what would be published.
+
+    Only stories from the current git user are publishable.
+    """
+    from ..db import get_db
+    from ..tools import get_git_user_identity
+
     scope = data.get("scope", "all")
     repo_name = data.get("repo_name")
     story_id = data.get("story_id")
     include_pushed = data.get("include_pushed", False)
 
+    # Get publishable stories (filtered by current user)
     stories = _get_stories_to_publish(scope, repo_name, story_id, include_pushed)
+
+    # Get total story count (before filtering) for comparison
+    db = get_db()
+    if scope == "story" and story_id:
+        total_count = 1 if db.get_story(story_id) else 0
+    elif scope == "repo" and repo_name:
+        projects = db.list_projects()
+        project_ids = [p["id"] for p in projects if p["name"] == repo_name]
+        total_count = len([s for s in db.list_stories(limit=10000) if s.project_id in project_ids])
+    else:
+        total_count = len(db.list_stories(limit=10000))
+
+    filtered_count = total_count - len(stories)
+
+    # Get current user info for context
+    current_user_email, current_user_name = get_git_user_identity()
 
     return {
         "count": len(stories),
+        "total_count": total_count,
+        "filtered_count": filtered_count,
+        "current_user": current_user_email or current_user_name or "unknown",
         "stories": [
             {
                 "id": s.id,
@@ -713,10 +793,14 @@ def _publish_preview(data: dict) -> dict:
 
 
 def _publish_stories(data: dict) -> dict:
-    """Publish stories to repr.dev."""
+    """Publish stories to repr.dev.
+
+    Only stories from the current git user are published.
+    """
     import asyncio
     from ..api import push_stories_batch, APIError, AuthError
     from ..config import is_authenticated, get_access_token
+    from ..db import get_db
 
     # Check authentication
     if not is_authenticated():
@@ -728,9 +812,16 @@ def _publish_stories(data: dict) -> dict:
     visibility_override = data.get("visibility")
     include_pushed = data.get("include_pushed", False)
 
+    # Get publishable stories (filtered by current user)
     stories = _get_stories_to_publish(scope, repo_name, story_id, include_pushed)
 
     if not stories:
+        # Check if there are stories that were filtered out
+        db = get_db()
+        if scope == "story" and story_id:
+            story = db.get_story(story_id)
+            if story:
+                return {"success": False, "error": "This story was authored by a different user and cannot be published."}
         return {"success": True, "published_count": 0, "failed_count": 0, "message": "No stories to publish"}
 
     # Build batch payload
@@ -768,6 +859,7 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        print(f"[GET] {self.path}")  # Debug log
         if self.path.startswith("/api/"):
             if self.path == "/api/stories":
                 self.serve_stories()
@@ -793,6 +885,8 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_visibility_settings()
             elif self.path.startswith("/api/publish/preview"):
                 self.serve_publish_preview()
+            elif self.path == "/api/version":
+                self.serve_version()
             else:
                 self.send_error(404, "API Endpoint Not Found")
         elif "." in self.path.split("/")[-1]:
@@ -809,6 +903,7 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "API Endpoint Not Found")
 
     def do_POST(self):
+        print(f"[POST] {self.path}")  # Debug log
         if self.path == "/api/repos/add":
             self.add_repo()
         elif self.path == "/api/repos/remove":
@@ -838,10 +933,12 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/api/stories/") and self.path.endswith("/visibility"):
             self.update_story_visibility()
         elif self.path == "/api/publish":
+            print("[POST] Matched /api/publish, calling do_publish()")  # Debug log
             self.do_publish()
         elif self.path == "/api/publish/mark-pushed":
             self.mark_stories_pushed()
         else:
+            print(f"[POST] No match for path: {self.path}")  # Debug log
             self.send_error(404, "API Endpoint Not Found")
 
     def do_OPTIONS(self):
@@ -971,6 +1068,33 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body.encode())
         except Exception:
             self.send_error(500, "Error loading stats")
+
+    def serve_version(self):
+        """Serve version info and update availability."""
+        try:
+            from .. import __version__
+            from ..updater import check_for_update, get_installation_method
+
+            # Check for updates (cached result to avoid too many API calls)
+            update_available = None
+            try:
+                update_available = check_for_update()
+            except Exception:
+                pass  # Silently fail if update check fails
+
+            response = {
+                "version": __version__,
+                "update_available": update_available,
+                "installation_method": get_installation_method(),
+            }
+            body = json.dumps(response)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
 
     def serve_config(self):
         """Serve current configuration."""
