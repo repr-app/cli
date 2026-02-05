@@ -667,3 +667,97 @@ def suggest_related_commits(
             seen_commits.update(related)
     
     return suggestions[:10]  # Return top 10 suggestions
+
+
+def get_git_user_identity(repo_path: Path | None = None) -> tuple[str | None, str | None]:
+    """
+    Get the current git user's name and email.
+
+    Tries to read from:
+    1. Repository-specific config (if repo_path provided)
+    2. Global git config
+
+    Args:
+        repo_path: Optional path to a repository to check repo-specific config first
+
+    Returns:
+        Tuple of (email, name), either may be None if not configured
+    """
+    email = None
+    name = None
+
+    # Try repo-specific config first
+    if repo_path:
+        try:
+            repo = Repo(repo_path, search_parent_directories=True)
+            reader = repo.config_reader()
+            try:
+                email = reader.get_value("user", "email", default=None)
+            except Exception:
+                pass
+            try:
+                name = reader.get_value("user", "name", default=None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # Fall back to global config if not found
+    if not email or not name:
+        import subprocess
+        try:
+            if not email:
+                result = subprocess.run(
+                    ["git", "config", "--global", "user.email"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    email = result.stdout.strip()
+            if not name:
+                result = subprocess.run(
+                    ["git", "config", "--global", "user.name"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    name = result.stdout.strip()
+        except Exception:
+            pass
+
+    return email, name
+
+
+def is_story_publishable(story_author_email: str | None, story_author_name: str | None, repo_path: Path | None = None) -> bool:
+    """
+    Check if a story is publishable by the current git user.
+
+    A story is publishable if its author matches the current git user (by email or name).
+
+    Args:
+        story_author_email: The story's author email
+        story_author_name: The story's author name
+        repo_path: Optional repo path for checking repo-specific git config
+
+    Returns:
+        True if the story is publishable by the current user
+    """
+    user_email, user_name = get_git_user_identity(repo_path)
+
+    # If we can't determine the current user, don't allow publishing
+    if not user_email and not user_name:
+        return False
+
+    # Check email match (primary)
+    if user_email and story_author_email:
+        if user_email.lower() == story_author_email.lower():
+            return True
+
+    # Check name match (fallback)
+    if user_name and story_author_name:
+        if user_name.lower() == story_author_name.lower():
+            return True
+
+    return False
