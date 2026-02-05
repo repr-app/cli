@@ -904,31 +904,56 @@ def _get_social_draft(draft_id: str) -> dict | None:
 
 def _generate_social_drafts(data: dict) -> dict:
     """Generate social drafts from recent stories."""
-    from ..social.generator import generate_from_recent_commits
+    from ..social.generator import generate_from_recent_commits, generate_from_project
     from ..social.db import get_social_db
     from ..social.models import SocialPlatform
+    from ..projects import get_project
     
     days = data.get("days", 7)
     limit = data.get("limit", 5)
     use_llm = data.get("use_llm", True)
     platforms_str = data.get("platforms")
+    project_name = data.get("project")  # New: project name
     
     platforms = None
     if platforms_str:
         platforms = []
-        for p in platforms_str.split(","):
+        for p in platforms_str.split(",") if isinstance(platforms_str, str) else platforms_str:
             try:
-                platforms.append(SocialPlatform(p.strip()))
+                platforms.append(SocialPlatform(p.strip() if isinstance(p, str) else p))
             except ValueError:
                 pass
     
     try:
-        drafts = generate_from_recent_commits(
-            days=days,
-            platforms=platforms,
-            use_llm=use_llm,
-            limit=limit,
-        )
+        # If project specified, use project-specific generation
+        if project_name:
+            project_config = get_project(project_name)
+            if not project_config:
+                return {"success": False, "error": f"Project not found: {project_name}"}
+            
+            # Use project's platforms if not explicitly specified
+            if not platforms and project_config.get("platforms"):
+                platforms = []
+                for p in project_config["platforms"]:
+                    try:
+                        platforms.append(SocialPlatform(p))
+                    except ValueError:
+                        pass
+            
+            drafts = generate_from_project(
+                project_path=project_config.get("path"),
+                days=days,
+                platforms=platforms,
+                use_llm=use_llm,
+                limit=limit,
+            )
+        else:
+            drafts = generate_from_recent_commits(
+                days=days,
+                platforms=platforms,
+                use_llm=use_llm,
+                limit=limit,
+            )
         
         # Save to database
         db = get_social_db()
@@ -1091,6 +1116,9 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_social_draft()
             elif self.path == "/api/social/connections":
                 self.serve_social_connections()
+            # Projects API endpoints
+            elif self.path == "/api/projects":
+                self.serve_projects()
             else:
                 self.send_error(404, "API Endpoint Not Found")
         elif "." in self.path.split("/")[-1]:
@@ -1852,6 +1880,29 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
         try:
             result = _get_social_connections()
             body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def serve_projects(self):
+        """Serve projects list for social post generation."""
+        try:
+            from ..projects import list_projects, get_default_project
+            
+            projects = list_projects()
+            default = get_default_project()
+            
+            result = {
+                "projects": projects,
+                "default_project": default.get("name") if default else None,
+            }
+            
+            body = json.dumps(result, default=str)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")

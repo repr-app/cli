@@ -274,6 +274,7 @@ def generate_from_recent_commits(
     platforms: Optional[List[SocialPlatform]] = None,
     use_llm: bool = True,
     limit: int = 5,
+    project_path: Optional[str] = None,
 ) -> List[SocialDraft]:
     """
     Generate social drafts from recent stories.
@@ -283,18 +284,25 @@ def generate_from_recent_commits(
         platforms: Target platforms
         use_llm: Whether to use LLM
         limit: Maximum stories to process
+        project_path: Optional path to filter stories by project
     
     Returns:
         List of SocialDraft objects
     """
     from ..db import get_db
     from datetime import datetime, timedelta, timezone
+    from pathlib import Path
     
     db = get_db()
     since = datetime.now(timezone.utc) - timedelta(days=days)
     
     # Get recent stories
     all_stories = db.list_stories(limit=100)
+    
+    # Normalize project path for comparison
+    normalized_path = None
+    if project_path:
+        normalized_path = str(Path(project_path).expanduser().resolve())
     
     def is_recent(story) -> bool:
         if not story.created_at:
@@ -306,9 +314,18 @@ def generate_from_recent_commits(
             created = created.replace(tzinfo=timezone.utc)
         return created >= since
     
+    def matches_project(story) -> bool:
+        if not normalized_path:
+            return True
+        # Check if story belongs to this project
+        story_path = getattr(story, 'project_path', None) or getattr(story, 'repo_path', None)
+        if story_path:
+            return str(Path(story_path).resolve()) == normalized_path
+        return True  # Include if no path info
+    
     recent_stories = [
         s.model_dump() for s in all_stories
-        if is_recent(s)
+        if is_recent(s) and matches_project(s)
     ][:limit]
     
     if not recent_stories:
@@ -316,6 +333,87 @@ def generate_from_recent_commits(
     
     return generate_social_drafts(
         stories=recent_stories,
+        platforms=platforms,
+        use_llm=use_llm,
+        limit_per_platform=limit,
+    )
+
+
+def generate_from_project(
+    project_path: str,
+    days: int = 7,
+    platforms: Optional[List[SocialPlatform]] = None,
+    use_llm: bool = True,
+    limit: int = 5,
+) -> List[SocialDraft]:
+    """
+    Generate social drafts from stories for a specific project.
+    
+    Args:
+        project_path: Path to the git repository
+        days: Look back this many days
+        platforms: Target platforms
+        use_llm: Whether to use LLM
+        limit: Maximum stories to process
+    
+    Returns:
+        List of SocialDraft objects
+    """
+    from ..db import get_db
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    
+    db = get_db()
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # Normalize path
+    normalized_path = str(Path(project_path).expanduser().resolve())
+    
+    # Try to find project by path in database
+    project_id = None
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM projects WHERE path = ?",
+            (normalized_path,)
+        ).fetchone()
+        if row:
+            project_id = row["id"]
+    
+    if not project_id:
+        # Fall back to filtering all stories by path
+        return generate_from_recent_commits(
+            days=days,
+            platforms=platforms,
+            use_llm=use_llm,
+            limit=limit,
+            project_path=project_path,
+        )
+    
+    # Get stories for this project
+    stories = []
+    with db.connect() as conn:
+        query = """
+            SELECT * FROM stories 
+            WHERE project_id = ? AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        for row in conn.execute(query, (project_id, since.isoformat(), limit)).fetchall():
+            story = dict(row)
+            # Deserialize JSON fields
+            for field in ["technologies", "implementation_details", "decisions", "lessons"]:
+                if story.get(field):
+                    try:
+                        story[field] = json.loads(story[field])
+                    except (json.JSONDecodeError, TypeError):
+                        story[field] = []
+            stories.append(story)
+    
+    if not stories:
+        return []
+    
+    return generate_social_drafts(
+        stories=stories,
         platforms=platforms,
         use_llm=use_llm,
         limit_per_platform=limit,

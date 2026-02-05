@@ -2,16 +2,23 @@
 CLI commands for social posts feature.
 
 Usage:
-    repr social generate           # Generate drafts from recent stories
-    repr social list               # List drafts
-    repr social post <draft_id>    # Post a draft
-    repr social connect <platform> # Connect OAuth
-    repr social status             # Show connection status
+    repr social generate                     # Generate drafts from recent stories
+    repr social generate --days 7            # Last 7 days
+    repr social generate --since 2026-02-01  # Since specific date
+    repr social generate --daily             # Just today
+    repr social generate --week              # This week
+    repr social generate --month             # This month
+    repr social generate --project mesh      # For specific project
+    repr social generate -p repr             # Short form
+    repr social list                         # List drafts
+    repr social post <draft_id>              # Post a draft
+    repr social connect <platform>           # Connect OAuth
+    repr social status                       # Show connection status
 """
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional, List
 
@@ -19,6 +26,7 @@ import typer
 from rich.table import Table
 from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.prompt import Prompt
 
 from ..ui import (
     console,
@@ -37,7 +45,7 @@ from ..ui import (
 
 from .models import SocialPlatform, DraftStatus
 from .db import get_social_db
-from .generator import generate_social_drafts, generate_from_recent_commits
+from .generator import generate_social_drafts, generate_from_recent_commits, generate_from_project
 from .oauth import (
     OAuthFlow,
     get_connection_status,
@@ -50,13 +58,80 @@ from .posting import post_draft_sync, PostingError
 social_app = typer.Typer(help="Generate and post social content from your stories")
 
 
+def _parse_since_date(since_str: str) -> datetime:
+    """Parse a date string in YYYY-MM-DD format."""
+    try:
+        return datetime.strptime(since_str, "%Y-%m-%d")
+    except ValueError:
+        raise typer.BadParameter(f"Invalid date format: {since_str}. Use YYYY-MM-DD.")
+
+
+def _select_project_interactive() -> Optional[str]:
+    """Show interactive project picker if multiple projects exist."""
+    from ..projects import list_projects, get_default_project
+    
+    projects = list_projects()
+    
+    if not projects:
+        print_info("No projects configured. Using all recent stories.")
+        print_info("Add a project: repr project add <path>")
+        return None
+    
+    if len(projects) == 1:
+        return projects[0]["name"]
+    
+    # Show picker
+    console.print(f"\n[bold {BRAND_PRIMARY}]Select Project[/]\n")
+    
+    default_project = get_default_project()
+    default_idx = 0
+    
+    for i, p in enumerate(projects):
+        is_default = p.get("is_default", False)
+        marker = " (default)" if is_default else ""
+        if is_default:
+            default_idx = i + 1
+        console.print(f"  [{BRAND_PRIMARY}]{i + 1}[/] {p['name']}{marker}")
+        if p.get("description"):
+            console.print(f"      [{BRAND_MUTED}]{p['description']}[/]")
+    
+    console.print(f"  [{BRAND_PRIMARY}]0[/] All projects")
+    console.print()
+    
+    try:
+        choice = Prompt.ask(
+            "Select project",
+            default=str(default_idx) if default_idx else "0"
+        )
+        choice = int(choice)
+        
+        if choice == 0:
+            return None
+        if 1 <= choice <= len(projects):
+            return projects[choice - 1]["name"]
+        
+        print_warning("Invalid selection, using all projects")
+        return None
+    except (ValueError, KeyboardInterrupt):
+        return None
+
+
 @social_app.command("generate")
 def generate_drafts(
-    days: int = typer.Option(7, "--days", "-d", help="Look back this many days"),
+    # Time frame options
+    days: Optional[int] = typer.Option(None, "--days", "-d", help="Look back this many days"),
+    since: Optional[str] = typer.Option(None, "--since", "-s", help="Since date (YYYY-MM-DD)"),
+    daily: bool = typer.Option(False, "--daily", help="Just today"),
+    week: bool = typer.Option(False, "--week", help="This week (last 7 days)"),
+    month: bool = typer.Option(False, "--month", help="This month (last 30 days)"),
+    # Project options
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Project name"),
+    # Platform options
     platforms: Optional[str] = typer.Option(
-        None, "--platforms", "-p",
+        None, "--platforms",
         help="Comma-separated platforms (twitter,linkedin,reddit,hackernews,indiehackers)"
     ),
+    # Other options
     limit: int = typer.Option(5, "--limit", "-l", help="Max stories to process"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Use template-only generation"),
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
@@ -64,16 +139,71 @@ def generate_drafts(
     """
     Generate social media drafts from recent stories.
     
-    Examples:
-        repr social generate                        # Generate for all platforms
-        repr social generate -p twitter,linkedin    # Specific platforms
-        repr social generate -d 30 -l 10            # Last 30 days, 10 stories
+    Time Frame Examples:
+        repr social generate                        # Default (last 7 days)
+        repr social generate --days 14              # Last 14 days
+        repr social generate --since 2026-02-01    # Since specific date
+        repr social generate --daily                # Just today
+        repr social generate --week                 # This week
+        repr social generate --month                # This month
+    
+    Project Examples:
+        repr social generate --project mesh         # For specific project
+        repr social generate -p repr                # Short form
+        repr social generate                        # Interactive picker if multiple
+    
+    Platform Examples:
+        repr social generate --platforms twitter,linkedin
     """
     console.print()
     console.print(f"[bold {BRAND_PRIMARY}]Generate Social Drafts[/]")
     console.print()
     
-    # Parse platforms
+    # Determine time range
+    if daily:
+        days_back = 1
+        time_desc = "today"
+    elif week:
+        days_back = 7
+        time_desc = "this week"
+    elif month:
+        days_back = 30
+        time_desc = "this month"
+    elif since:
+        since_date = _parse_since_date(since)
+        days_back = (datetime.now() - since_date).days
+        time_desc = f"since {since}"
+    elif days:
+        days_back = days
+        time_desc = f"last {days} days"
+    else:
+        # Default: 7 days
+        days_back = 7
+        time_desc = "last 7 days"
+    
+    # Handle project selection
+    from ..projects import get_project, list_projects
+    
+    target_project = None
+    project_config = None
+    
+    if project:
+        project_config = get_project(project)
+        if not project_config:
+            print_error(f"Project not found: {project}")
+            print_info("List projects: repr project list")
+            print_info("Add a project: repr project add <path>")
+            raise typer.Exit(1)
+        target_project = project
+    else:
+        # Check if there are projects configured
+        all_projects = list_projects()
+        if all_projects and not output_json:
+            target_project = _select_project_interactive()
+            if target_project:
+                project_config = get_project(target_project)
+    
+    # Parse platforms (from project config or command line)
     target_platforms = None
     if platforms:
         target_platforms = []
@@ -83,21 +213,45 @@ def generate_drafts(
                 target_platforms.append(SocialPlatform(p))
             except ValueError:
                 print_warning(f"Unknown platform: {p}")
+    elif project_config and project_config.get("platforms"):
+        target_platforms = []
+        for p in project_config["platforms"]:
+            try:
+                target_platforms.append(SocialPlatform(p))
+            except ValueError:
+                pass
     
-    with create_spinner("Generating drafts from recent stories..."):
+    # Generate based on project or all stories
+    spinner_text = f"Generating drafts from {time_desc}"
+    if target_project:
+        spinner_text += f" for {target_project}"
+    spinner_text += "..."
+    
+    with create_spinner(spinner_text):
         try:
-            drafts = generate_from_recent_commits(
-                days=days,
-                platforms=target_platforms,
-                use_llm=not no_llm,
-                limit=limit,
-            )
+            if project_config:
+                drafts = generate_from_project(
+                    project_path=project_config.get("path"),
+                    days=days_back,
+                    platforms=target_platforms,
+                    use_llm=not no_llm,
+                    limit=limit,
+                )
+            else:
+                drafts = generate_from_recent_commits(
+                    days=days_back,
+                    platforms=target_platforms,
+                    use_llm=not no_llm,
+                    limit=limit,
+                )
         except Exception as e:
             print_error(f"Generation failed: {e}")
             raise typer.Exit(1)
     
     if not drafts:
-        print_warning("No stories found in the specified time range")
+        print_warning(f"No stories found for {time_desc}")
+        if target_project:
+            print_info(f"Project: {target_project}")
         print_info("Run `repr generate` first to create stories from commits")
         raise typer.Exit(0)
     
@@ -111,6 +265,9 @@ def generate_drafts(
         console.print(json.dumps(output, indent=2))
     else:
         print_success(f"Generated {len(drafts)} drafts")
+        if target_project:
+            console.print(f"[{BRAND_MUTED}]Project: {target_project}[/]")
+        console.print(f"[{BRAND_MUTED}]Time range: {time_desc}[/]")
         console.print()
         
         # Group by platform

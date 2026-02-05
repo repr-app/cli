@@ -359,6 +359,7 @@ configure_app = typer.Typer(help="Configure repr (LLM, repos, schedule)")
 
 # Import social CLI
 from .social.cli import social_app
+from .project_cli import project_app
 
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(cron_app, name="cron")
@@ -373,6 +374,7 @@ app.add_typer(friends_app, name="friends")
 app.add_typer(skill_app, name="skill")
 app.add_typer(configure_app, name="configure")
 app.add_typer(social_app, name="social")
+app.add_typer(project_app, name="project")
 
 
 def version_callback(value: bool):
