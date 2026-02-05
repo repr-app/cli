@@ -357,6 +357,9 @@ friends_app = typer.Typer(help="Manage friends")
 skill_app = typer.Typer(help="Manage repr skill for AI agents")
 configure_app = typer.Typer(help="Configure repr (LLM, repos, schedule)")
 
+# Import social CLI
+from .social.cli import social_app
+
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(cron_app, name="cron")
 app.add_typer(llm_app, name="llm")
@@ -369,6 +372,7 @@ app.add_typer(timeline_app, name="timeline")
 app.add_typer(friends_app, name="friends")
 app.add_typer(skill_app, name="skill")
 app.add_typer(configure_app, name="configure")
+app.add_typer(social_app, name="social")
 
 
 def version_callback(value: bool):

@@ -852,6 +852,203 @@ def _publish_stories(data: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
+# ============================================================================
+# Social API helpers
+# ============================================================================
+
+def _get_social_drafts(
+    platform: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+) -> list:
+    """Get social drafts from database."""
+    from ..social.db import get_social_db
+    from ..social.models import SocialPlatform, DraftStatus
+    
+    db = get_social_db()
+    
+    target_platform = None
+    if platform:
+        try:
+            target_platform = SocialPlatform(platform)
+        except ValueError:
+            pass
+    
+    target_status = None
+    if status:
+        try:
+            target_status = DraftStatus(status)
+        except ValueError:
+            pass
+    
+    drafts = db.list_drafts(
+        platform=target_platform,
+        status=target_status,
+        limit=limit,
+    )
+    
+    return [d.model_dump(mode="json") for d in drafts]
+
+
+def _get_social_draft(draft_id: str) -> dict | None:
+    """Get a single draft by ID."""
+    from ..social.db import get_social_db
+    
+    db = get_social_db()
+    draft = db.get_draft(draft_id)
+    
+    if draft:
+        return draft.model_dump(mode="json")
+    return None
+
+
+def _generate_social_drafts(data: dict) -> dict:
+    """Generate social drafts from recent stories."""
+    from ..social.generator import generate_from_recent_commits
+    from ..social.db import get_social_db
+    from ..social.models import SocialPlatform
+    
+    days = data.get("days", 7)
+    limit = data.get("limit", 5)
+    use_llm = data.get("use_llm", True)
+    platforms_str = data.get("platforms")
+    
+    platforms = None
+    if platforms_str:
+        platforms = []
+        for p in platforms_str.split(","):
+            try:
+                platforms.append(SocialPlatform(p.strip()))
+            except ValueError:
+                pass
+    
+    try:
+        drafts = generate_from_recent_commits(
+            days=days,
+            platforms=platforms,
+            use_llm=use_llm,
+            limit=limit,
+        )
+        
+        # Save to database
+        db = get_social_db()
+        for draft in drafts:
+            db.save_draft(draft)
+        
+        return {
+            "success": True,
+            "count": len(drafts),
+            "drafts": [d.model_dump(mode="json") for d in drafts],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _update_social_draft(draft_id: str, data: dict) -> dict:
+    """Update a draft's content."""
+    from ..social.db import get_social_db
+    
+    db = get_social_db()
+    draft = db.get_draft(draft_id)
+    
+    if not draft:
+        return {"success": False, "error": "Draft not found"}
+    
+    db.update_draft_content(
+        draft_id,
+        title=data.get("title"),
+        content=data.get("content"),
+        thread_parts=data.get("thread_parts"),
+    )
+    
+    return {"success": True}
+
+
+def _delete_social_draft(draft_id: str) -> dict:
+    """Delete a draft."""
+    from ..social.db import get_social_db
+    
+    db = get_social_db()
+    db.delete_draft(draft_id)
+    return {"success": True}
+
+
+def _post_social_draft(draft_id: str, platform: str | None = None) -> dict:
+    """Post a draft to its platform."""
+    import asyncio
+    from ..social.posting import post_draft, PostingError
+    from ..social.models import SocialPlatform
+    
+    target_platform = None
+    if platform:
+        try:
+            target_platform = SocialPlatform(platform)
+        except ValueError:
+            pass
+    
+    try:
+        result = asyncio.run(post_draft(draft_id, target_platform))
+        return result
+    except PostingError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _get_social_connections() -> dict:
+    """Get OAuth connection status for all platforms."""
+    from ..social.oauth import get_all_connection_statuses
+    from ..social.db import get_social_db
+    
+    statuses = get_all_connection_statuses()
+    db = get_social_db()
+    stats = db.get_stats()
+    
+    return {
+        "connections": statuses,
+        "stats": stats,
+    }
+
+
+def _start_social_oauth(platform: str) -> dict:
+    """Start OAuth flow for a platform."""
+    from ..social.oauth import OAuthFlow
+    from ..social.models import SocialPlatform
+    
+    try:
+        target_platform = SocialPlatform(platform)
+    except ValueError:
+        return {"success": False, "error": f"Unknown platform: {platform}"}
+    
+    if target_platform not in [SocialPlatform.TWITTER, SocialPlatform.LINKEDIN]:
+        return {"success": False, "error": f"{platform} doesn't require OAuth"}
+    
+    flow = OAuthFlow(target_platform)
+    auth_url = flow.get_authorization_url()
+    
+    # Store flow state for callback
+    # Note: In a real implementation, this would be stored in a session or cache
+    return {
+        "success": True,
+        "auth_url": auth_url,
+        "state": flow.state,
+    }
+
+
+def _disconnect_social_platform(platform: str) -> dict:
+    """Disconnect from a social platform."""
+    from ..social.oauth import disconnect_platform
+    from ..social.models import SocialPlatform
+    
+    try:
+        target_platform = SocialPlatform(platform)
+    except ValueError:
+        return {"success": False, "error": f"Unknown platform: {platform}"}
+    
+    disconnect_platform(target_platform)
+    return {"success": True}
+
+
 class TimelineHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for story dashboard."""
 
@@ -887,6 +1084,13 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
                 self.serve_publish_preview()
             elif self.path == "/api/version":
                 self.serve_version()
+            # Social API endpoints
+            elif self.path == "/api/social/drafts" or self.path.startswith("/api/social/drafts?"):
+                self.serve_social_drafts()
+            elif self.path.startswith("/api/social/drafts/") and not self.path.endswith("/post"):
+                self.serve_social_draft()
+            elif self.path == "/api/social/connections":
+                self.serve_social_connections()
             else:
                 self.send_error(404, "API Endpoint Not Found")
         elif "." in self.path.split("/")[-1]:
@@ -937,6 +1141,19 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
             self.do_publish()
         elif self.path == "/api/publish/mark-pushed":
             self.mark_stories_pushed()
+        # Social API endpoints
+        elif self.path == "/api/social/generate":
+            self.generate_social_drafts()
+        elif self.path.startswith("/api/social/drafts/") and self.path.endswith("/post"):
+            self.post_social_draft()
+        elif self.path.startswith("/api/social/drafts/") and "/update" in self.path:
+            self.update_social_draft()
+        elif self.path.startswith("/api/social/drafts/") and "/delete" in self.path:
+            self.delete_social_draft()
+        elif self.path == "/api/social/connect":
+            self.start_social_oauth()
+        elif self.path == "/api/social/disconnect":
+            self.disconnect_social()
         else:
             print(f"[POST] No match for path: {self.path}")  # Debug log
             self.send_error(404, "API Endpoint Not Found")
@@ -1571,6 +1788,197 @@ class TimelineHandler(http.server.BaseHTTPRequestHandler):
                 db.commit()
 
             response_body = json.dumps({"success": True, "marked": len(story_ids)})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    # =========================================================================
+    # Social endpoints
+    # =========================================================================
+
+    def serve_social_drafts(self):
+        """Serve list of social drafts."""
+        from urllib.parse import urlparse, parse_qs
+        
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            platform = query.get("platform", [None])[0]
+            status = query.get("status", [None])[0]
+            limit = int(query.get("limit", [100])[0])
+            
+            drafts = _get_social_drafts(platform, status, limit)
+            body = json.dumps({"drafts": drafts})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def serve_social_draft(self):
+        """Serve a single draft."""
+        try:
+            # Extract draft_id from path: /api/social/drafts/{draft_id}
+            parts = self.path.split("/")
+            draft_id = parts[4] if len(parts) > 4 else ""
+            
+            draft = _get_social_draft(draft_id)
+            if draft:
+                body = json.dumps(draft)
+                self.send_response(200)
+            else:
+                body = json.dumps({"error": "Draft not found"})
+                self.send_response(404)
+            
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def serve_social_connections(self):
+        """Serve social connection status."""
+        try:
+            result = _get_social_connections()
+            body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(body.encode()))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def generate_social_drafts(self):
+        """Generate social drafts from stories."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+            
+            result = _generate_social_drafts(data)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def post_social_draft(self):
+        """Post a draft to its platform."""
+        try:
+            # Extract draft_id from path: /api/social/drafts/{draft_id}/post
+            parts = self.path.split("/")
+            draft_id = parts[4] if len(parts) > 5 else ""
+            
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+            platform = data.get("platform")
+            
+            result = _post_social_draft(draft_id, platform)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def update_social_draft(self):
+        """Update a draft's content."""
+        try:
+            # Extract draft_id from path: /api/social/drafts/{draft_id}/update
+            parts = self.path.split("/")
+            draft_id = parts[4] if len(parts) > 5 else ""
+            
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+            
+            result = _update_social_draft(draft_id, data)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def delete_social_draft(self):
+        """Delete a draft."""
+        try:
+            # Extract draft_id from path: /api/social/drafts/{draft_id}/delete
+            parts = self.path.split("/")
+            draft_id = parts[4] if len(parts) > 5 else ""
+            
+            result = _delete_social_draft(draft_id)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def start_social_oauth(self):
+        """Start OAuth flow for a platform."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+            platform = data.get("platform", "")
+            
+            result = _start_social_oauth(platform)
+            response_body = json.dumps(result)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", len(response_body.encode()))
+            self.end_headers()
+            self.wfile.write(response_body.encode())
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def disconnect_social(self):
+        """Disconnect from a social platform."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode()) if body else {}
+            platform = data.get("platform", "")
+            
+            result = _disconnect_social_platform(platform)
+            response_body = json.dumps(result)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
