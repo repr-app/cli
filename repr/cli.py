@@ -1624,12 +1624,13 @@ def stories(
     category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category (feature, bugfix, refactor, perf, infra, docs, test, chore)"),
     scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Filter by scope (user-facing, internal, platform, ops)"),
     stack: Optional[str] = typer.Option(None, "--stack", help="Filter by stack (frontend, backend, database, infra, mobile, fullstack)"),
+    search: Optional[str] = typer.Option(None, "--search", help="Filter by text search in title, summary, or content"),
     needs_review: bool = typer.Option(False, "--needs-review", help="Show only stories needing review"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """
     List all stories.
-    
+
     Example:
         repr stories
         repr stories --repo myproject
@@ -1637,9 +1638,10 @@ def stories(
         repr stories --scope user-facing
         repr stories --stack backend
         repr stories --needs-review
+        repr stories --search "api"
     """
     story_list = list_stories(repo_name=repo, needs_review=needs_review)
-    
+
     # Apply category filters (local filtering since storage doesn't support these yet)
     if category:
         story_list = [s for s in story_list if s.get("category") == category]
@@ -1647,6 +1649,22 @@ def stories(
         story_list = [s for s in story_list if s.get("scope") == scope]
     if stack:
         story_list = [s for s in story_list if s.get("stack") == stack]
+
+    # Apply text search filter
+    if search:
+        search_lower = search.lower()
+        story_list = [
+            s for s in story_list
+            if search_lower in s.get("summary", "").lower()
+            or search_lower in s.get("title", "").lower()
+            or search_lower in s.get("problem", "").lower()
+            or search_lower in s.get("approach", "").lower()
+            or search_lower in s.get("outcome", "").lower()
+            or search_lower in s.get("insight", "").lower()
+            or search_lower in s.get("value", "").lower()
+            or search_lower in s.get("what", "").lower()
+            or any(search_lower in str(t).lower() for t in s.get("technologies", []))
+        ]
     
     if json_output:
         print(json.dumps(story_list, indent=2, default=str))
