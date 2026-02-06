@@ -11,9 +11,10 @@ Creates coherent Story objects by:
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Union
 
 from openai import OpenAI
+from anthropic import Anthropic
 from pydantic import BaseModel, Field
 
 from .config import get_or_generate_username
@@ -526,7 +527,8 @@ class StorySynthesizer:
         self.base_url = base_url
         self._model_override = model  # Explicit override
         self._model: str | None = None  # Resolved model (lazy)
-        self._client: OpenAI | None = None
+        self._client: Union[OpenAI, Anthropic, None] = None
+        self._client_type: str | None = None  # "openai" or "anthropic"
 
     @property
     def model(self) -> str:
@@ -580,23 +582,71 @@ class StorySynthesizer:
 
         return "gpt-4o-mini"  # Final fallback
 
-    def _get_client(self) -> OpenAI:
-        """Get or create OpenAI client."""
+    def _get_client(self) -> Union[OpenAI, Anthropic]:
+        """Get or create LLM client (OpenAI or Anthropic)."""
         if self._client is None:
             import os
 
             api_key = self.api_key
             base_url = self.base_url
 
+            # Determine which provider to use
+            provider = None
+
             if not api_key:
                 try:
-                    from .config import get_byok_config, get_llm_config, get_litellm_config
+                    from .config import (
+                        get_byok_config,
+                        get_litellm_config,
+                        get_llm_config,
+                        BYOK_PROVIDERS,
+                    )
 
-                    # Check BYOK first
-                    byok = get_byok_config("openai")
-                    if byok and byok.get("api_key"):
-                        api_key = byok["api_key"]
-                        base_url = base_url or byok.get("base_url")
+                    # Determine which BYOK provider to use based on model
+                    model_name = self.model
+                    byok_provider = None
+
+                    # Check if model matches a configured BYOK provider model
+                    for provider_name in BYOK_PROVIDERS.keys():
+                        byok = get_byok_config(provider_name)
+                        if byok and byok.get("model") == model_name:
+                            byok_provider = provider_name
+                            break
+
+                    # Also check for provider/model format (e.g., "anthropic/claude-haiku-4-5")
+                    if not byok_provider and "/" in model_name:
+                        provider_part = model_name.split("/")[0]
+                        if provider_part in BYOK_PROVIDERS:
+                            byok_provider = provider_part
+
+                    # Anthropic uses its own client
+                    if byok_provider == "anthropic":
+                        byok = get_byok_config("anthropic")
+                        if byok and byok.get("api_key"):
+                            api_key = byok["api_key"]
+                            provider = "anthropic"
+                    # OpenAI-compatible providers (groq, together, openrouter)
+                    elif byok_provider in ("openai", "groq", "together", "openrouter"):
+                        byok = get_byok_config(byok_provider)
+                        if byok and byok.get("api_key"):
+                            api_key = byok["api_key"]
+                            base_url = base_url or byok.get("base_url")
+                            provider = "openai"
+                    # Other providers (gemini, etc.) need LiteLLM
+                    elif byok_provider:
+                        litellm_url, litellm_key = get_litellm_config()
+                        if litellm_key:
+                            api_key = litellm_key
+                            base_url = base_url or litellm_url
+                            provider = "openai"  # LiteLLM is OpenAI-compatible
+
+                    # Fallback to openai BYOK
+                    if not api_key:
+                        byok = get_byok_config("openai")
+                        if byok and byok.get("api_key"):
+                            api_key = byok["api_key"]
+                            base_url = base_url or byok.get("base_url")
+                            provider = "openai"
 
                     # Check local LLM config
                     if not api_key:
@@ -604,6 +654,7 @@ class StorySynthesizer:
                         if llm_config.get("local_api_key"):
                             api_key = llm_config["local_api_key"]
                             base_url = base_url or llm_config.get("local_api_url")
+                            provider = "openai"
 
                     # Check LiteLLM
                     if not api_key:
@@ -611,18 +662,32 @@ class StorySynthesizer:
                         if litellm_key:
                             api_key = litellm_key
                             base_url = base_url or litellm_url
+                            provider = "openai"
                 except Exception:
                     pass
 
                 if not api_key:
                     api_key = os.getenv("OPENAI_API_KEY")
+                    provider = "openai"
 
             if not api_key:
                 raise ValueError("No API key found. Configure via 'repr llm byok openai <key>'")
 
-            self._client = OpenAI(api_key=api_key, base_url=base_url)
+            # Create the appropriate client
+            if provider == "anthropic":
+                self._client = Anthropic(api_key=api_key, base_url=base_url)
+                self._client_type = "anthropic"
+            else:
+                self._client = OpenAI(api_key=api_key, base_url=base_url)
+                self._client_type = "openai"
 
         return self._client
+
+    def _get_client_type(self) -> str:
+        """Get the type of client being used ('openai' or 'anthropic')."""
+        if self._client_type is None:
+            self._get_client()  # Initialize client
+        return self._client_type
     
     def _format_commits_for_prompt(self, commits: list[CommitData]) -> str:
         """Format commits for LLM prompt."""
@@ -656,22 +721,42 @@ class StorySynthesizer:
 
         # Get LLM analysis (using sync client to avoid event loop cleanup issues)
         client = self._get_client()
+        client_type = self._client_type or "openai"
         commits_text = self._format_commits_for_prompt(commits)
 
         def make_request(use_temperature: bool = True):
-            kwargs = {
-                "model": self.model.split("/")[-1] if "/" in self.model else self.model,
-                "messages": [
-                    {"role": "system", "content": STORY_SYNTHESIS_SYSTEM},
-                    {"role": "user", "content": STORY_SYNTHESIS_USER.format(
-                        commits_text=commits_text
-                    )},
-                ],
-                "response_format": {"type": "json_object"},
-            }
-            if use_temperature:
-                kwargs["temperature"] = 0.3
-            return client.chat.completions.create(**kwargs)
+            model_name = self.model.split("/")[-1] if "/" in self.model else self.model
+
+            if client_type == "anthropic":
+                # Anthropic API format
+                kwargs = {
+                    "model": model_name,
+                    "system": STORY_SYNTHESIS_SYSTEM,
+                    "messages": [
+                        {"role": "user", "content": STORY_SYNTHESIS_USER.format(
+                            commits_text=commits_text
+                        )},
+                    ],
+                    "max_tokens": 4096,
+                }
+                if use_temperature:
+                    kwargs["temperature"] = 0.3
+                return client.messages.create(**kwargs)
+            else:
+                # OpenAI API format
+                kwargs = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": STORY_SYNTHESIS_SYSTEM},
+                        {"role": "user", "content": STORY_SYNTHESIS_USER.format(
+                            commits_text=commits_text
+                        )},
+                    ],
+                    "response_format": {"type": "json_object"},
+                }
+                if use_temperature:
+                    kwargs["temperature"] = 0.3
+                return client.chat.completions.create(**kwargs)
 
         try:
             try:
@@ -682,7 +767,11 @@ class StorySynthesizer:
                 else:
                     raise
 
-            content = response.choices[0].message.content
+            # Extract content from response (different formats for OpenAI vs Anthropic)
+            if client_type == "anthropic":
+                content = response.content[0].text
+            else:
+                content = response.choices[0].message.content
 
             # Strip markdown code fences if present (many models wrap JSON in ```json blocks)
             content = content.strip()
@@ -1050,6 +1139,7 @@ async def transform_story_for_feed(
     """
     synthesizer = StorySynthesizer(api_key=api_key, base_url=base_url, model=model)
     client = synthesizer._get_client()
+    client_type = synthesizer._client_type or "openai"
     model_name = synthesizer.model
 
     # Format implementation details
@@ -1083,17 +1173,34 @@ async def transform_story_for_feed(
         response_model = InternalStory
 
     def make_story_request(use_temperature: bool = True):
-        kwargs = {
-            "model": model_name.split("/")[-1] if "/" in model_name else model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        if use_temperature:
-            kwargs["temperature"] = 0.7
-        return client.chat.completions.create(**kwargs)
+        actual_model = model_name.split("/")[-1] if "/" in model_name else model_name
+
+        if client_type == "anthropic":
+            # Anthropic API format
+            kwargs = {
+                "model": actual_model,
+                "system": system_prompt,
+                "messages": [
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_tokens": 4096,
+            }
+            if use_temperature:
+                kwargs["temperature"] = 0.7
+            return client.messages.create(**kwargs)
+        else:
+            # OpenAI API format
+            kwargs = {
+                "model": actual_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            }
+            if use_temperature:
+                kwargs["temperature"] = 0.7
+            return client.chat.completions.create(**kwargs)
 
     try:
         # Use sync client to avoid event loop cleanup issues
@@ -1105,7 +1212,11 @@ async def transform_story_for_feed(
             else:
                 raise
 
-        content = response.choices[0].message.content.strip()
+        # Extract content from response (different formats for OpenAI vs Anthropic)
+        if client_type == "anthropic":
+            content = response.content[0].text.strip()
+        else:
+            content = response.choices[0].message.content.strip()
 
         # Strip markdown code fences if present
         if content.startswith("```"):

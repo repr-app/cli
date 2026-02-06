@@ -29,7 +29,7 @@ from .config import (
     set_repo_hook_status,
 )
 from .keychain import store_secret, get_secret
-from .llm import detect_all_local_llms, LocalLLMInfo
+from .llm import detect_all_local_llms, LocalLLMInfo, test_byok_provider
 from .ui import (
     console,
     print_header,
@@ -503,23 +503,31 @@ def wizard_llm() -> bool:
         else:
             menu_items.append(f"  {name} - {desc}")
 
+    while True:
+        # Show menu
+        idx = select_option(menu_items, title="Select LLM provider:")
+        if idx is None:
+            return False
+
+        selected = options[idx]
         console.print()
 
-    # Show menu
-    idx = select_option(menu_items, title="Select LLM provider:")
-    if idx is None:
-        return False
+        # Configure based on type
+        success = False
+        if selected["type"] == "local":
+            success = _configure_local_llm(selected)
+        elif selected["type"] == "local_manual":
+            success = _configure_local_llm_manual(selected)
+        else:
+            success = _configure_api_llm(selected)
+        
+        if success:
+            return True
+        
+        console.print()
+        if not confirm("Choose a different provider?"):
+            return False
 
-    selected = options[idx]
-    console.print()
-
-    # Configure based on type
-    if selected["type"] == "local":
-        return _configure_local_llm(selected)
-    elif selected["type"] == "local_manual":
-        return _configure_local_llm_manual(selected)
-    else:
-        return _configure_api_llm(selected)
 
 
 def _configure_local_llm(selected: dict) -> bool:
@@ -613,31 +621,53 @@ def _configure_api_llm(selected: dict) -> bool:
         print_error("API key required")
         return False
 
-    # Test the key and list models
-    console.print()
-    with create_spinner() as progress:
-        task = progress.add_task("Verifying API key...", total=None)
-        models = list_provider_models(provider, api_key=api_key)
+    # Get model manually
+    default_model = info["default_model"]
+    model = Prompt.ask("Model name", default=default_model)
 
-    if not models:
-        print_error("Could not fetch models - check your API key")
-        if not confirm("Continue with default model?"):
-            return False
-        models = [{"id": info["default_model"], "name": info["default_model"]}]
+    while True:
+        # Verify
+        console.print()
+        with create_spinner() as progress:
+            task = progress.add_task(f"Verifying {model}...", total=None)
+            result = test_byok_provider(provider, api_key, model)
 
-    # Select model
-    model = select_model(models, default=info["default_model"])
-    if not model:
-        return False
+        if result.success:
+            # Save to keychain and config
+            add_byok_provider(provider, api_key, model)
+            
+            # Set as default
+            set_llm_config(default=f"byok:{provider}")
 
-    # Save to keychain and config
-    add_byok_provider(provider, api_key, model)
+            print_success(f"Configured {info['name']} with model {model}")
+            return True
+        else:
+            print_error(f"Verification failed: {result.error}")
+            
+            # Show redacted info
+            redacted_key = api_key
+            if len(api_key) > 8:
+                redacted_key = api_key[:4] + "..." + api_key[-4:]
+            else:
+                redacted_key = "***"
+            
+            console.print(f"  API Key: {redacted_key}")
+            console.print(f"  Model:   {model}")
+            console.print()
 
-    # Set as default
-    set_llm_config(default=f"byok:{provider}")
-
-    print_success(f"Configured {info['name']} with model {model}")
-    return True
+            # Options
+            options = ["Try again", "Edit API Key", "Edit Model", "Change Provider"]
+            choice = select_option(options, title="What would you like to do?")
+            
+            if choice == 0: # Try again
+                continue
+            elif choice == 1: # Edit API Key
+                api_key = Prompt.ask("API Key", password=True)
+                if not api_key: return False
+            elif choice == 2: # Edit Model
+                model = Prompt.ask("Model name", default=model)
+            else: # Change Provider (3 or None)
+                return False
 
 
 # =============================================================================
